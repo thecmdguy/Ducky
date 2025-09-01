@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="ducky_icon1.png" alt="Ducky Logo" width="120" />
+  <img src="ducky_icon.png" alt="Ducky Logo" width="120" />
   <h1>Ducky - The Ultimate Networking Tool</h1>
   <p>
     An open-source, all-in-one desktop application for network engineers, students, and enthusiasts.
