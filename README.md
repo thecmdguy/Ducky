@@ -22,10 +22,10 @@ Ducky is a powerful, Desktop application that combines several essential network
 Support Ducky
 If you find Ducky useful and would like to support its development, consider making a donation! Your contributions help keep this project alive and continuously improved.
 <p align="center">
-<a href="https://ko-fi.com/thecmdguy" target="_blank">
+<a href="https://www.paypal.com/paypalme/Gtsnobiladze" target="_blank">
 <img src="https://img.shields.io/badge/Donate-Support%20Ducky-blueviolet?style=for-the-badge&logo=paypal&logoColor=white" alt="Donate Button">
 </a>
-<a href="https://ko-fi.com/YOUR_KOFI_USERNAME" target="_blank">
+<a href="https://ko-fi.com/thecmdguy" target="_blank">
 <img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5e?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Ko-fi Button">
 </a>
 </p>
