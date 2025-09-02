@@ -1,0 +1,15 @@
+Here are the contents for the `Ducky_Project/requirements.txt` file. It lists the three external Python libraries your application depends on.
+
+```
+PySide6
+pyserial
+psutil
+```
+
+### Why These Are Needed:
+
+*   **`PySide6`**: This is the core framework for your entire graphical user interface (GUI). It provides all the Qt widgets like `QMainWindow`, `QPushButton`, `QTextEdit`, etc.
+*   **`pyserial`**: This library is specifically for serial port communication. It's what allows Ducky to connect to COM ports and interact with network hardware.
+*   **`psutil`** (Python System and Process Utilities): This library is used in the "Network Monitor" tool to get system information like CPU usage, memory usage, and detailed network I/O statistics.
+
+When a new user clones your repository, they can simply run `pip install -r requirements.txt`, and it will automatically install these exact three packages, ensuring the application runs without any "Module Not Found" errors.
