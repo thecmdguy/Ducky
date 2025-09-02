@@ -9,9 +9,10 @@ from PySide6.QtWidgets import (
     QColorDialog
 )
 from PySide6.QtGui import (
-    QPalette, QColor, QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QBrush
+    QPalette, QColor, QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QBrush,
+    QKeyEvent
 )
-from PySide6.QtCore import Signal, Slot, QTimer
+from PySide6.QtCore import Signal, Slot, QTimer, Qt
 from ducky_app.core.config_manager import ConfigManager
 from ducky_app.core.workers import SerialReaderThread, NetworkToolThread
 from ducky_app.ui.dialogs import SerialConfigDialog
@@ -35,7 +36,7 @@ class BaseNetworkingToolWidget(QWidget):
         self.output_text.setFont(QFont(settings.get("terminal_font_family", "Monospace"), settings.get("terminal_font_size", 10)))
 
 class SerialTerminalWidget(BaseNetworkingToolWidget):
-    """Widget for serial port communication."""
+    """Widget for serial port communication with direct terminal interaction."""
     serial_connected = Signal(bool)
 
     def __init__(self, config_manager: ConfigManager, parent=None):
@@ -45,11 +46,17 @@ class SerialTerminalWidget(BaseNetworkingToolWidget):
         self.reader_thread = None
         self.current_log_data = ""
         self._current_serial_settings = {
-            "port": None, "baudrate": self.config_manager.get_setting("default_baudrate"),
-            "databits": 8, "parity": serial.PARITY_NONE, "stopbits": serial.STOPBITS_ONE, "timeout":0
+            "port": None,
+            "baudrate": self.config_manager.get_setting("default_baudrate"),
+            "bytesize": 8,
+            "parity": serial.PARITY_NONE,
+            "stopbits": serial.STOPBITS_ONE,
+            "timeout": 0
         }
 
         main_layout = self.layout()
+
+        # --- Control Bar (Top) ---
         control_layout = QHBoxLayout()
         self.port_label = QLabel("Port: N/A")
         self.baud_label = QLabel("Baud: N/A")
@@ -62,33 +69,91 @@ class SerialTerminalWidget(BaseNetworkingToolWidget):
         control_layout.addWidget(self.disconnect_btn)
         main_layout.insertLayout(0, control_layout)
 
-        command_layout = QHBoxLayout() 
-        self.command_input = QLineEdit()
-        self.send_btn = QPushButton("Send")
-        command_layout.addWidget(self.command_input)
-        command_layout.addWidget(self.send_btn)
-        main_layout.insertLayout(1, command_layout)
+        # --- Connect key press event for the terminal ---
+        self.output_text.keyPressEvent = self.handle_key_press
 
+        # --- Connections ---
         self.connect_btn.clicked.connect(self._open_serial_dialog)
         self.disconnect_btn.clicked.connect(self._disconnect_serial)
-        self.command_input.returnPressed.connect(self._send_command)
-        self.send_btn.clicked.connect(self._send_command)
+        
+        # Ensure the cursor is always visible and at the end when typing
+        self.output_text.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextEditorInteraction
+        )
 
         self.update_port_info()
         self._set_terminal_active(False)
 
+    def handle_key_press(self, event: QKeyEvent):
+        """
+        Handles key presses inside the terminal QTextEdit.
+        Sends the character to the serial port if connected.
+        """
+        # Check for standard shortcuts like Ctrl+C (Copy) and Ctrl+V (Paste).
+        # We let the base class handle these so copy/paste still works.
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.key() == Qt.Key.Key_C or event.key() == Qt.Key.Key_V:
+                super(QTextEdit, self.output_text).keyPressEvent(event)
+                return
+
+        # Handle keyboard input for the serial port
+        if self.serial_port and self.serial_port.is_open and not self.output_text.isReadOnly():
+            char_to_send = event.text()
+
+            if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+                char_to_send = '\r'
+            elif event.key() == Qt.Key.Key_Backspace:
+                char_to_send = '\b'
+            
+            # Don't send anything for keys that don't produce text (e.g., Shift, Alt)
+            if char_to_send:
+                try:
+                    self.serial_port.write(char_to_send.encode('utf-8'))
+                except serial.SerialException as e:
+                    QMessageBox.critical(self, "Serial Write Error", f"Failed to send data: {e}")
+                    self._disconnect_serial()
+        else:
+            # If not connected or in read-only mode, allow default behavior like scrolling/copying
+            super(QTextEdit, self.output_text).keyPressEvent(event)
+
+    def _set_terminal_active(self, active: bool):
+        self.connect_btn.setEnabled(not active)
+        self.disconnect_btn.setEnabled(active)
+
+        if active:
+            self.output_text.setReadOnly(False)
+            self.output_text.setFocus()
+            self.output_text.setTextCursor(QTextCursor(self.output_text.document()))
+            self.output_text.moveCursor(QTextCursor.MoveOperation.End)
+        else:
+            self.output_text.setReadOnly(True)
+
+    @Slot(bytes)
+    def _handle_data_received(self, data: bytes):
+        try:
+            decoded_data = data.decode('latin-1')
+            cursor = self.output_text.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            
+            # Handle backspace characters from the device
+            for char in decoded_data:
+                if char == '\b':
+                    # Move cursor back, insert a space to overwrite, then move back again
+                    cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter, QTextCursor.MoveMode.KeepAnchor)
+                    cursor.removeSelectedText()
+                else:
+                    cursor.insertText(char)
+            
+            self.output_text.setTextCursor(cursor)
+            self.current_log_data += decoded_data
+        except Exception as e:
+            print(f"[ERROR] Decoding data: {e}")
+    
     def update_port_info(self):
         port = self._current_serial_settings.get("port") or "N/A"
         baud = self._current_serial_settings.get("baudrate") if port != "N/A" else "N/A"
         self.port_label.setText(f"Port: {port}")
         self.baud_label.setText(f"Baud: {baud}")
-
-    def _set_terminal_active(self, active: bool):
-        self.output_text.setReadOnly(not active)
-        self.command_input.setEnabled(active)
-        self.send_btn.setEnabled(active)
-        self.connect_btn.setEnabled(not active)
-        self.disconnect_btn.setEnabled(active)
 
     @Slot()
     def _open_serial_dialog(self):
@@ -121,8 +186,8 @@ class SerialTerminalWidget(BaseNetworkingToolWidget):
             self.reader_thread.data_received.connect(self._handle_data_received)
             self.reader_thread.connection_lost.connect(self._handle_connection_lost)
             self.reader_thread.start()
-        except serial.SerialException as e:
-            QMessageBox.critical(self, "Serial Connection Error", f"Failed to open port: {e}")
+        except (serial.SerialException, ValueError) as e:
+            QMessageBox.critical(self, "Connection Error", f"Failed to open port: {e}")
             self._set_terminal_active(False)
 
     @Slot()
@@ -130,40 +195,27 @@ class SerialTerminalWidget(BaseNetworkingToolWidget):
         if self.reader_thread and self.reader_thread.isRunning(): self.reader_thread.stop()
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
-            self.output_text.append("--- Disconnected ---")
+            self.output_text.append("\n--- Disconnected ---")
         self.serial_port = None
         self.serial_connected.emit(False)
         self._set_terminal_active(False)
 
     @Slot(str)
     def _handle_connection_lost(self, error_msg):
-        self.output_text.append(f"--- Connection Lost: {error_msg} ---")
+        self.output_text.append(f"\n--- Connection Lost: {error_msg} ---")
         self._disconnect_serial()
 
-    @Slot(bytes)
-    def _handle_data_received(self, data: bytes):
-        decoded_data = data.decode('utf-8', errors='replace')
-        self.output_text.insertPlainText(decoded_data)
-        self.current_log_data += decoded_data
-        self.output_text.verticalScrollBar().setValue(self.output_text.verticalScrollBar().maximum())
-
-    @Slot()
-    def _send_command(self):
-        if self.serial_port and self.serial_port.is_open:
-            command = self.command_input.text() + "\r\n"
-            self.serial_port.write(command.encode('utf-8'))
-            self.output_text.insertPlainText(f"[SENT] {command}")
-            self.current_log_data += f"[SENT] {command}"
-            self.command_input.clear()
-
     def get_current_log_data(self): return self.current_log_data
+    
     def get_current_session_metadata(self):
         if self.serial_port:
             return { "port": self.serial_port.port, "baudrate": self.serial_port.baudrate }
         return {}
+        
     def clear_terminal(self):
         self.output_text.clear()
         self.current_log_data = ""
+        
     def load_log_for_display(self, log_content):
         self.clear_terminal()
         self.output_text.setPlainText(log_content)
@@ -291,6 +343,8 @@ class PortScannerWidget(BaseNetworkingToolWidget):
         if self.scan_thread and self.scan_thread.isRunning(): return
         try:
             start, end = map(int, self.port_range_input.text().strip().split('-'))
+            if not (0 < start <= 65535 and start <= end <= 65535):
+                raise ValueError("Port range out of bounds")
         except ValueError:
             QMessageBox.warning(self, "Input Error", "Invalid port range (e.g., 1-1024).")
             return
@@ -432,8 +486,11 @@ class NotepadWidget(QWidget):
 
     def _load_note(self):
         if os.path.exists(self.notepad_file_path):
-            with open(self.notepad_file_path, 'r', encoding='utf-8') as f:
-                self.notepad_text.setHtml(f.read())
+            try:
+                with open(self.notepad_file_path, 'r', encoding='utf-8') as f:
+                    self.notepad_text.setHtml(f.read())
+            except Exception as e:
+                print(f"Could not load notes: {e}")
 
     @Slot()
     def _auto_save_note(self): self._save_note(self.notepad_file_path)
