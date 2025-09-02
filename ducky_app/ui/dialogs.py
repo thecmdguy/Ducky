@@ -8,8 +8,9 @@ from PySide6.QtGui import QFont, QColor
 from PySide6.QtCore import Signal, Slot
 from ducky_app.core.config_manager import ConfigManager
 
+
 class SerialConfigDialog(QDialog):
-    """Dialog for configuring serial port settings."""
+    # ... (the __init__ method and other methods are correct)
     def __init__(self, current_settings: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Serial Port Settings")
@@ -26,7 +27,7 @@ class SerialConfigDialog(QDialog):
         # Controls setup
         self._add_combo_row(layout, "Port:", self.port_combo_widget, self._get_ports(), self.settings.get('port'))
         self._add_combo_row(layout, "Baud Rate:", self.baud_combo_widget, ["9600", "19200", "38400", "57600", "115200"], str(self.settings.get('baudrate', 9600)))
-        self._add_combo_row(layout, "Data Bits:", self.data_combo_widget, ["8", "7", "6", "5"], str(self.settings.get('databits', 8)))
+        self._add_combo_row(layout, "Data Bits:", self.data_combo_widget, ["8", "7", "6", "5"], str(self.settings.get('bytesize', 8))) # Use bytesize as default key
         self._add_combo_row(layout, "Parity:", self.parity_combo_widget, ["None", "Even", "Odd", "Mark", "Space"], self._parity_to_str(self.settings.get('parity', serial.PARITY_NONE)))
         self._add_combo_row(layout, "Stop Bits:", self.stop_combo_widget, ["1", "1.5", "2"], self._stopbits_to_str(self.settings.get('stopbits', serial.STOPBITS_ONE)))
 
@@ -65,6 +66,7 @@ class SerialConfigDialog(QDialog):
     def _stopbits_to_str(self, s):
         return {serial.STOPBITS_ONE: "1", serial.STOPBITS_ONE_POINT_FIVE: "1.5", serial.STOPBITS_TWO: "2"}.get(s, "1")
 
+    # --- THIS IS THE METHOD TO FIX ---
     def get_settings(self):
         parity_map = {"None": serial.PARITY_NONE, "Even": serial.PARITY_EVEN, "Odd": serial.PARITY_ODD, "Mark": serial.PARITY_MARK, "Space": serial.PARITY_SPACE}
         stopbits_map = {"1": serial.STOPBITS_ONE, "1.5": serial.STOPBITS_ONE_POINT_FIVE, "2": serial.STOPBITS_TWO}
@@ -72,11 +74,12 @@ class SerialConfigDialog(QDialog):
         return {
             "port": self.port_combo_widget.currentText(),
             "baudrate": int(self.baud_combo_widget.currentText()),
-            "databits": int(self.data_combo_widget.currentText()),
+            "bytesize": int(self.data_combo_widget.currentText()), # <-- CHANGED from 'databits' to 'bytesize'
             "parity": parity_map.get(self.parity_combo_widget.currentText()),
             "stopbits": stopbits_map.get(self.stop_combo_widget.currentText()),
         }
 
+# ... (The SettingsDialog class is correct and unchanged)
 class SettingsDialog(QDialog):
     """Dialog for customizing application appearance."""
     settings_changed = Signal()
