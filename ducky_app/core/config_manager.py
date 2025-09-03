@@ -1,9 +1,10 @@
+# ducky_app/core/config_manager.py
+
 import os
 import json
 from PySide6.QtCore import QStandardPaths
 
 class ConfigManager:
-    """Manages application settings, colors, and fonts."""
     def __init__(self):
         self.config_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation)
         os.makedirs(self.config_dir, exist_ok=True)
@@ -30,7 +31,6 @@ class ConfigManager:
                         loaded_config[key] = default_val
                 return loaded_config
             except json.JSONDecodeError:
-                print(f"Warning: Could not decode config file {self.config_file}. Using defaults.")
                 return default_config
         return default_config
 

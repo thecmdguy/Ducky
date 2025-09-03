@@ -1,10 +1,11 @@
+# ducky_app/core/session_manager.py
+
 import os
 import json
 import time
 from ducky_app.core.config_manager import ConfigManager
 
 class SessionManager:
-    """Manages saving and loading of terminal sessions."""
     def __init__(self, config_manager: ConfigManager):
         self.config_manager = config_manager
         self.base_session_dir = self.config_manager.get_setting("session_folder")

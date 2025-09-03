@@ -3,29 +3,36 @@ import ipaddress
 import psutil
 import socket
 import serial
+import hashlib
+import time
+import asyncio
+import telnetlib3
+import paramiko
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit, QPushButton,
     QLabel, QToolBar, QFontComboBox, QSpinBox, QMessageBox, QFileDialog,
-    QColorDialog
+    QColorDialog, QGraphicsView, QGraphicsScene, QGraphicsItemGroup, QGraphicsEllipseItem,
+    QGraphicsTextItem, QProgressBar, QComboBox, QPlainTextEdit, QTableWidget, QHeaderView,
+    QAbstractItemView, QTableWidgetItem, QApplication
 )
 from PySide6.QtGui import (
     QPalette, QColor, QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QBrush,
-    QKeyEvent
+    QKeyEvent, QPainter
 )
 from PySide6.QtCore import Signal, Slot, QTimer, Qt
 from ducky_app.core.config_manager import ConfigManager
-from ducky_app.core.workers import SerialReaderThread, NetworkToolThread
-from ducky_app.ui.dialogs import SerialConfigDialog
+from ducky_app.core.workers import ConnectionReaderThread, NetworkToolThread, DiscoveryWorker, CveSearchWorker
+from ducky_app.ui.dialogs import ConnectionDialog
+from zxcvbn import zxcvbn
 
 class BaseNetworkingToolWidget(QWidget):
-    """Base class for networking tools with a consistent output display."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setLayout(QVBoxLayout())
         self.output_text = QTextEdit()
+        self.setLayout(QVBoxLayout())
+        self.layout().addWidget(self.output_text)
         self.output_text.setReadOnly(True)
         self.output_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        self.layout().addWidget(self.output_text)
 
     @Slot(dict)
     def apply_settings(self, settings: dict):
@@ -35,478 +42,522 @@ class BaseNetworkingToolWidget(QWidget):
         self.output_text.setPalette(palette)
         self.output_text.setFont(QFont(settings.get("terminal_font_family", "Monospace"), settings.get("terminal_font_size", 10)))
 
-class SerialTerminalWidget(BaseNetworkingToolWidget):
-    """Widget for serial port communication with direct terminal interaction."""
-    serial_connected = Signal(bool)
+class BaseTerminalWidget(QWidget):
+    connection_closed = Signal()
 
     def __init__(self, config_manager: ConfigManager, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
-        self.serial_port = None
+        self.client = None
+        self.ssh_client = None
+        self.telnet_writer = None
         self.reader_thread = None
-        self.current_log_data = ""
-        self._current_serial_settings = {
-            "port": None,
-            "baudrate": self.config_manager.get_setting("default_baudrate"),
-            "bytesize": 8,
-            "parity": serial.PARITY_NONE,
-            "stopbits": serial.STOPBITS_ONE,
-            "timeout": 0
-        }
-
-        main_layout = self.layout()
-
-        # --- Control Bar (Top) ---
-        control_layout = QHBoxLayout()
-        self.port_label = QLabel("Port: N/A")
-        self.baud_label = QLabel("Baud: N/A")
-        self.connect_btn = QPushButton("Open Port")
-        self.disconnect_btn = QPushButton("Close Port")
-        control_layout.addWidget(self.port_label)
-        control_layout.addWidget(self.baud_label)
-        control_layout.addStretch(1)
-        control_layout.addWidget(self.connect_btn)
-        control_layout.addWidget(self.disconnect_btn)
-        main_layout.insertLayout(0, control_layout)
-
-        # --- Connect key press event for the terminal ---
-        self.output_text.keyPressEvent = self.handle_key_press
-
-        # --- Connections ---
-        self.connect_btn.clicked.connect(self._open_serial_dialog)
-        self.disconnect_btn.clicked.connect(self._disconnect_serial)
+        self.is_connected = False
+        self.conn_type = None
+        self._current_settings = {}
         
-        # Ensure the cursor is always visible and at the end when typing
-        self.output_text.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextEditorInteraction
-        )
+        self.command_history = []
+        self.history_index = -1
+        self.known_commands = sorted([
+            "show running-config", "show startup-config", "show ip interface brief",
+            "show version", "show interfaces", "show vlan", "show mac address-table",
+            "configure terminal", "interface", "ip address", "vlan", "switchport",
+            "no shutdown", "exit", "end", "copy running-config startup-config",
+            "write memory", "reload", "enable"
+        ])
 
-        self.update_port_info()
-        self._set_terminal_active(False)
+        self.output_text = QTextEdit()
+        self.output_text.keyPressEvent = self.handle_key_press
+        self.output_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.output_text)
+        self.setFocusProxy(self.output_text)
+
+    def connect_to_target(self, settings):
+        if self.is_connected: self.disconnect_from_target()
+        
+        self._current_settings = settings
+        self.conn_type = settings.get("type")
+        self.clear_terminal()
+        self.output_text.setReadOnly(False)
+
+        try:
+            tab_name = "Error"
+            if self.conn_type == "serial":
+                self.client = serial.Serial(**{k:v for k,v in settings.items() if k != 'type'})
+                self.reader_thread = ConnectionReaderThread(self.client, None, self.conn_type)
+                tab_name = f"{settings['port']}"
+            
+            elif self.conn_type == "telnet":
+                try:
+                    reader, writer = asyncio.run(telnetlib3.open_connection(settings['host'], settings['port'], timeout=5))
+                    self.telnet_writer = writer
+                    self.reader_thread = ConnectionReaderThread(reader, writer, self.conn_type)
+                    tab_name = f"Telnet: {settings['host']}"
+                except Exception as e:
+                    raise ConnectionRefusedError(f"Telnet connection failed: {e}") from e
+
+            elif self.conn_type == "ssh":
+                self.ssh_client = paramiko.SSHClient()
+                self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                self.ssh_client.connect(
+                    hostname=settings['host'], port=settings['port'],
+                    username=settings['username'], password=settings['password'],
+                    timeout=10, look_for_keys=False, allow_agent=False
+                )
+                self.client = self.ssh_client.invoke_shell()
+                self.reader_thread = ConnectionReaderThread(self.client, None, self.conn_type)
+                tab_name = f"SSH: {settings['username']}@{settings['host']}"
+
+            self.is_connected = True
+            self.reader_thread.data_received.connect(self._handle_data_received)
+            self.reader_thread.connection_lost.connect(self._handle_connection_lost)
+            self.reader_thread.start()
+            self.setFocus()
+            return True, tab_name
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Connection Error", f"Failed to connect: {e}")
+            self.is_connected = False
+            return False, "Error"
+
+    def disconnect_from_target(self):
+        if self.reader_thread and self.reader_thread.isRunning(): self.reader_thread.stop()
+        if self.telnet_writer: 
+            try: self.telnet_writer.close()
+            except: pass
+        if self.client:
+            try: self.client.close()
+            except: pass
+        if self.ssh_client:
+            try: self.ssh_client.close()
+            except: pass
+        self.client, self.ssh_client, self.telnet_writer, self.is_connected = None, None, None, False
+        self.connection_closed.emit()
+        self.output_text.setReadOnly(True)
+
+    def load_log_for_display(self, log_content):
+        self.clear_terminal(); self.output_text.setPlainText(log_content); self.output_text.setReadOnly(True)
 
     def handle_key_press(self, event: QKeyEvent):
-        """
-        Handles key presses inside the terminal QTextEdit.
-        Sends the character to the serial port if connected.
-        """
-        # Check for standard shortcuts like Ctrl+C (Copy) and Ctrl+V (Paste).
-        # We let the base class handle these so copy/paste still works.
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            if event.key() == Qt.Key.Key_C or event.key() == Qt.Key.Key_V:
+        cursor = self.output_text.textCursor()
+
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and (event.key() == Qt.Key.Key_C or event.key() == Qt.Key.Key_V):
+            super(QTextEdit, self.output_text).keyPressEvent(event); return
+        
+        if self.is_connected and not self.output_text.isReadOnly():
+            if event.key() == Qt.Key.Key_Up:
+                if self.history_index < len(self.command_history) - 1:
+                    self.history_index += 1
+                    self.recall_history()
+                return
+            
+            elif event.key() == Qt.Key.Key_Down:
+                if self.history_index > 0:
+                    self.history_index -= 1
+                    self.recall_history()
+                else:
+                    self.history_index = -1
+                    cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+                    line_text = cursor.selectedText()
+                    prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
+                    if prompt_end == 0: # Failsafe
+                         prompt_end = len(line_text)
+                         
+                    cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+                    cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, prompt_end)
+                    cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+                    cursor.removeSelectedText()
+                return
+            
+            if event.key() in [Qt.Key.Key_Left, Qt.Key.Key_Right]:
                 super(QTextEdit, self.output_text).keyPressEvent(event)
                 return
 
-        # Handle keyboard input for the serial port
-        if self.serial_port and self.serial_port.is_open and not self.output_text.isReadOnly():
+        if self.is_connected and not self.output_text.isReadOnly():
+            if event.key() == Qt.Key.Key_Tab:
+                self.perform_tab_completion()
+                return
+                
             char_to_send = event.text()
-
-            if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+            if event.key() in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
+                cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+                line_text = cursor.selectedText()
+                prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
+                if prompt_end == 0:
+                    prompt_end = len(line_text)
+                    
+                command = line_text[prompt_end:].strip()
+                if command:
+                    if not self.command_history or self.command_history[0] != command:
+                        self.command_history.insert(0, command)
+                self.history_index = -1
                 char_to_send = '\r'
+            
             elif event.key() == Qt.Key.Key_Backspace:
                 char_to_send = '\b'
             
-            # Don't send anything for keys that don't produce text (e.g., Shift, Alt)
             if char_to_send:
                 try:
-                    self.serial_port.write(char_to_send.encode('utf-8'))
-                except serial.SerialException as e:
-                    QMessageBox.critical(self, "Serial Write Error", f"Failed to send data: {e}")
-                    self._disconnect_serial()
-        else:
-            # If not connected or in read-only mode, allow default behavior like scrolling/copying
-            super(QTextEdit, self.output_text).keyPressEvent(event)
+                    data = char_to_send.encode('utf-8')
+                    if self.conn_type == 'ssh': self.client.send(data)
+                    elif self.conn_type == 'telnet': self.telnet_writer.write(data)
+                    else: self.client.write(data)
+                except Exception as e:
+                    QMessageBox.critical(self, "Write Error", f"Failed to send data: {e}"); self.disconnect_from_target()
+        
+        super(QTextEdit, self.output_text).keyPressEvent(event)
+        
+    def recall_history(self):
+        if 0 <= self.history_index < len(self.command_history):
+            command = self.command_history[self.history_index]
+            cursor = self.output_text.textCursor()
+            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+            line_text = cursor.selectedText()
+            prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
+            if prompt_end == 0:
+                prompt_end = len(line_text)
+            
+            prompt = line_text[:prompt_end]
 
-    def _set_terminal_active(self, active: bool):
-        self.connect_btn.setEnabled(not active)
-        self.disconnect_btn.setEnabled(active)
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+            cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, prompt_end)
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+            cursor.insertText(command)
+            self.output_text.setTextCursor(cursor)
+    
+    def perform_tab_completion(self):
+        cursor = self.output_text.textCursor()
+        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+        line_text = cursor.selectedText()
+        prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
+        current_input = line_text[prompt_end:]
 
-        if active:
-            self.output_text.setReadOnly(False)
-            self.output_text.setFocus()
-            self.output_text.setTextCursor(QTextCursor(self.output_text.document()))
-            self.output_text.moveCursor(QTextCursor.MoveOperation.End)
-        else:
-            self.output_text.setReadOnly(True)
+        parts = current_input.strip().split()
+        if not parts: return
+        
+        word_to_complete = parts[-1]
+        matches = [cmd for cmd in self.known_commands if cmd.startswith(word_to_complete)]
+
+        if len(matches) == 1:
+            completion = matches[0][len(word_to_complete):]
+            self.output_text.insertPlainText(completion)
+            if self.is_connected:
+                data_to_send = completion.encode('utf-8')
+                if self.conn_type == 'ssh': self.client.send(data_to_send)
+                elif self.conn_type == 'telnet': self.telnet_writer.write(data_to_send)
+                else: self.client.write(data_to_send)
+        elif len(matches) > 1:
+            QApplication.beep()
+            # Optionally list matches
+            self.output_text.append("\n" + "  ".join(matches))
+            self.output_text.append(line_text) # Re-print current line
+            if self.is_connected:
+                self.client.write(b'\n') # Send newline to get new prompt
 
     @Slot(bytes)
     def _handle_data_received(self, data: bytes):
         try:
-            decoded_data = data.decode('latin-1')
-            cursor = self.output_text.textCursor()
+            decoded_data = data.decode('utf-8', errors='replace'); cursor = self.output_text.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
-            
-            # Handle backspace characters from the device
             for char in decoded_data:
-                if char == '\b':
-                    # Move cursor back, insert a space to overwrite, then move back again
-                    cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter, QTextCursor.MoveMode.KeepAnchor)
-                    cursor.removeSelectedText()
-                else:
-                    cursor.insertText(char)
-            
+                if char == '\b': cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter, QTextCursor.MoveMode.KeepAnchor); cursor.removeSelectedText()
+                else: cursor.insertText(char)
             self.output_text.setTextCursor(cursor)
-            self.current_log_data += decoded_data
-        except Exception as e:
-            print(f"[ERROR] Decoding data: {e}")
-    
-    def update_port_info(self):
-        port = self._current_serial_settings.get("port") or "N/A"
-        baud = self._current_serial_settings.get("baudrate") if port != "N/A" else "N/A"
-        self.port_label.setText(f"Port: {port}")
-        self.baud_label.setText(f"Baud: {baud}")
-
-    @Slot()
-    def _open_serial_dialog(self):
-        if self.serial_port and self.serial_port.is_open:
-            self._disconnect_serial()
-        dialog = SerialConfigDialog(self._current_serial_settings, self)
-        if dialog.exec():
-            self._current_serial_settings.update(dialog.get_settings())
-            self.update_port_info()
-            self._connect_serial()
-
-    @Slot()
-    def _connect_serial(self):
-        if self.reader_thread and self.reader_thread.isRunning(): self.reader_thread.stop()
-        if self.serial_port and self.serial_port.is_open: self.serial_port.close()
-
-        settings = self._current_serial_settings
-        if not settings["port"] or settings["port"] == "No COM Ports Found":
-            QMessageBox.warning(self, "Serial Error", "No valid COM port selected.")
-            return
-
-        try:
-            self.serial_port = serial.Serial(**settings)
-            self.clear_terminal()
-            self.output_text.append(f"--- Connected to {settings['port']} @ {settings['baudrate']} bps ---")
-            self.serial_connected.emit(True)
-            self._set_terminal_active(True)
-
-            self.reader_thread = SerialReaderThread(self.serial_port)
-            self.reader_thread.data_received.connect(self._handle_data_received)
-            self.reader_thread.connection_lost.connect(self._handle_connection_lost)
-            self.reader_thread.start()
-        except (serial.SerialException, ValueError) as e:
-            QMessageBox.critical(self, "Connection Error", f"Failed to open port: {e}")
-            self._set_terminal_active(False)
-
-    @Slot()
-    def _disconnect_serial(self):
-        if self.reader_thread and self.reader_thread.isRunning(): self.reader_thread.stop()
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
-            self.output_text.append("\n--- Disconnected ---")
-        self.serial_port = None
-        self.serial_connected.emit(False)
-        self._set_terminal_active(False)
-
+        except Exception: pass
+        
     @Slot(str)
     def _handle_connection_lost(self, error_msg):
-        self.output_text.append(f"\n--- Connection Lost: {error_msg} ---")
-        self._disconnect_serial()
-
-    def get_current_log_data(self): return self.current_log_data
-    
-    def get_current_session_metadata(self):
-        if self.serial_port:
-            return { "port": self.serial_port.port, "baudrate": self.serial_port.baudrate }
-        return {}
-        
-    def clear_terminal(self):
+        self.output_text.append(f"\n--- {error_msg} ---"); self.disconnect_from_target()
+    def get_current_log_data(self): return self.output_text.toPlainText()
+    def get_current_session_metadata(self): return self._current_settings if self.is_connected else {}
+    def clear_terminal(self): 
         self.output_text.clear()
-        self.current_log_data = ""
-        
-    def load_log_for_display(self, log_content):
-        self.clear_terminal()
-        self.output_text.setPlainText(log_content)
-        self._set_terminal_active(False)
+        self.command_history.clear()
+        self.history_index = -1
+    @Slot(dict)
+    def apply_settings(self, settings: dict):
+        palette = self.output_text.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor(settings.get("terminal_bg_color", "#282C34")))
+        palette.setColor(QPalette.ColorRole.Text, QColor(settings.get("terminal_font_color", "#ABB2BF")))
+        self.output_text.setPalette(palette)
+        self.output_text.setFont(QFont(settings.get("terminal_font_family", "Monospace"), settings.get("terminal_font_size", 10)))
 
 class SubnetCalculatorWidget(BaseNetworkingToolWidget):
-    """Widget for performing subnet calculations."""
     def __init__(self, parent=None):
-        super().__init__(parent)
-        input_layout = QHBoxLayout()
-        input_layout.addWidget(QLabel("IP Address/CIDR:"))
-        self.ip_input = QLineEdit("192.168.1.0/24")
-        self.calculate_btn = QPushButton("Calculate")
-        input_layout.addWidget(self.ip_input)
-        input_layout.addWidget(self.calculate_btn)
-        self.layout().insertLayout(0, input_layout)
-        self.calculate_btn.clicked.connect(self._calculate_subnet)
-
+        super().__init__(parent); input_layout = QHBoxLayout(); input_layout.addWidget(QLabel("IP Address/CIDR:"))
+        self.ip_input = QLineEdit("192.168.1.0/24"); self.calculate_btn = QPushButton("Calculate")
+        input_layout.addWidget(self.ip_input); input_layout.addWidget(self.calculate_btn)
+        self.layout().insertLayout(0, input_layout); self.calculate_btn.clicked.connect(self._calculate_subnet)
     @Slot()
     def _calculate_subnet(self):
         self.output_text.clear()
         try:
-            network = ipaddress.ip_network(self.ip_input.text().strip(), strict=False)
-            hosts = list(network.hosts())
-            output = [
-                f"--- Subnet Calculation for {network.with_prefixlen} ---",
-                f"Network Address: {network.network_address}",
-                f"Subnet Mask: {network.netmask}",
-                f"Broadcast Address: {network.broadcast_address}",
-                f"Usable Host Range: {hosts[0]} - {hosts[-1]}" if hosts else "N/A",
-                f"Total Addresses: {network.num_addresses}",
-                f"Usable Hosts: {len(hosts)}",
-            ]
+            network = ipaddress.ip_network(self.ip_input.text().strip(), strict=False); hosts = list(network.hosts())
+            output = [f"--- Subnet Calculation for {network.with_prefixlen} ---", f"Network Address: {network.network_address}", f"Subnet Mask: {network.netmask}",
+                      f"Broadcast Address: {network.broadcast_address}", f"Usable Host Range: {hosts[0]} - {hosts[-1]}" if hosts else "N/A",
+                      f"Total Addresses: {network.num_addresses}", f"Usable Hosts: {len(hosts)}"]
             self.output_text.setPlainText("\n".join(output))
-        except ValueError as e:
-            self.output_text.setPlainText(f"Error: {e}")
+        except ValueError as e: self.output_text.setPlainText(f"Error: {e}")
 
 class NetworkPerformanceMonitorWidget(BaseNetworkingToolWidget):
-    """Widget for monitoring local network performance."""
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.tool_thread = None
-        control_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton("Refresh Local Info")
-        self.target_input = QLineEdit("google.com")
-        self.ping_btn = QPushButton("Ping")
-        self.traceroute_btn = QPushButton("Traceroute")
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setEnabled(False)
-        control_layout.addWidget(self.refresh_btn)
-        control_layout.addWidget(QLabel("Target:"))
-        control_layout.addWidget(self.target_input)
-        control_layout.addWidget(self.ping_btn)
-        control_layout.addWidget(self.traceroute_btn)
-        control_layout.addWidget(self.stop_btn)
-        self.layout().insertLayout(0, control_layout)
-
-        self.refresh_btn.clicked.connect(self._refresh_local_info)
-        self.ping_btn.clicked.connect(lambda: self._start_network_tool("ping"))
-        self.traceroute_btn.clicked.connect(lambda: self._start_network_tool("traceroute"))
-        self.stop_btn.clicked.connect(self._stop_network_tool)
-        self._refresh_local_info()
-
+        super().__init__(parent); self.tool_thread = None; control_layout = QHBoxLayout()
+        self.refresh_btn = QPushButton("Refresh Local Info"); self.target_input = QLineEdit("google.com"); self.ping_btn = QPushButton("Ping")
+        self.traceroute_btn = QPushButton("Traceroute"); self.stop_btn = QPushButton("Stop"); self.stop_btn.setEnabled(False)
+        control_layout.addWidget(self.refresh_btn); control_layout.addWidget(QLabel("Target:")); control_layout.addWidget(self.target_input)
+        control_layout.addWidget(self.ping_btn); control_layout.addWidget(self.traceroute_btn); control_layout.addWidget(self.stop_btn)
+        self.layout().insertLayout(0, control_layout); self.refresh_btn.clicked.connect(self._refresh_local_info)
+        self.ping_btn.clicked.connect(lambda: self._start_network_tool("ping")); self.traceroute_btn.clicked.connect(lambda: self._start_network_tool("traceroute"))
+        self.stop_btn.clicked.connect(self._stop_network_tool); self._refresh_local_info()
     @Slot()
     def _refresh_local_info(self):
-        self.output_text.clear()
-        mem = psutil.virtual_memory()
-        net_io = psutil.net_io_counters()
-        output = [
-            "--- Local System and Network Information ---",
-            f"CPU Usage: {psutil.cpu_percent(interval=0.1)}%",
-            f"Memory Usage: {mem.percent}% ({mem.used/1024**3:.2f}GB / {mem.total/1024**3:.2f}GB)",
-            "\n--- Network I/O ---",
-            f"Bytes Sent: {net_io.bytes_sent/1024**2:.2f} MB",
-            f"Bytes Recv: {net_io.bytes_recv/1024**2:.2f} MB"
-        ]
+        self.output_text.clear(); mem = psutil.virtual_memory(); net_io = psutil.net_io_counters()
+        output = ["--- Local System and Network Information ---", f"CPU Usage: {psutil.cpu_percent(interval=0.1)}%",
+                  f"Memory Usage: {mem.percent}% ({mem.used/1024**3:.2f}GB / {mem.total/1024**3:.2f}GB)", "\n--- Network I/O ---",
+                  f"Bytes Sent: {net_io.bytes_sent/1024**2:.2f} MB", f"Bytes Recv: {net_io.bytes_recv/1024**2:.2f} MB"]
         self.output_text.setPlainText("\n".join(output))
-
     @Slot(str)
     def _start_network_tool(self, tool_type):
         if self.tool_thread and self.tool_thread.isRunning(): return
-        self.output_text.clear()
-        self._set_buttons_enabled(False)
+        self.output_text.clear(); self._set_buttons_enabled(False)
         self.tool_thread = NetworkToolThread(tool_type, self.target_input.text().strip())
         self.tool_thread.result_output.connect(self.output_text.insertPlainText)
-        self.tool_thread.scan_complete.connect(lambda: self._set_buttons_enabled(True))
-        self.tool_thread.start()
-
+        self.tool_thread.scan_complete.connect(lambda: self._set_buttons_enabled(True)); self.tool_thread.start()
     @Slot()
     def _stop_network_tool(self):
-        if self.tool_thread and self.tool_thread.isRunning():
-            self.tool_thread.stop()
-            self.tool_thread = None
+        if self.tool_thread and self.tool_thread.isRunning(): self.tool_thread.stop(); self.tool_thread = None
         self._set_buttons_enabled(True)
-
     def _set_buttons_enabled(self, enabled):
-        self.ping_btn.setEnabled(enabled)
-        self.traceroute_btn.setEnabled(enabled)
-        self.stop_btn.setEnabled(not enabled)
+        self.ping_btn.setEnabled(enabled); self.traceroute_btn.setEnabled(enabled); self.stop_btn.setEnabled(not enabled)
 
 class PortScannerWidget(BaseNetworkingToolWidget):
-    """Widget for scanning open ports on a target."""
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.scan_thread = None
-        control_layout = QHBoxLayout()
-        self.target_input = QLineEdit("127.0.0.1")
-        self.port_range_input = QLineEdit("1-1024")
-        self.scan_btn = QPushButton("Scan Ports")
-        self.stop_btn = QPushButton("Stop Scan")
-        self.stop_btn.setEnabled(False)
-        control_layout.addWidget(QLabel("Target:"))
-        control_layout.addWidget(self.target_input)
-        control_layout.addWidget(QLabel("Port Range:"))
-        control_layout.addWidget(self.port_range_input)
-        control_layout.addWidget(self.scan_btn)
-        control_layout.addWidget(self.stop_btn)
-        self.layout().insertLayout(0, control_layout)
-
-        self.scan_btn.clicked.connect(self._start_port_scan)
-        self.stop_btn.clicked.connect(self._stop_port_scan)
-
+        super().__init__(parent); self.scan_thread = None; control_layout = QHBoxLayout()
+        self.target_input = QLineEdit("127.0.0.1"); self.port_range_input = QLineEdit("1-1024"); self.scan_btn = QPushButton("Scan Ports")
+        self.stop_btn = QPushButton("Stop Scan"); self.stop_btn.setEnabled(False)
+        control_layout.addWidget(QLabel("Target:")); control_layout.addWidget(self.target_input); control_layout.addWidget(QLabel("Port Range:"))
+        control_layout.addWidget(self.port_range_input); control_layout.addWidget(self.scan_btn); control_layout.addWidget(self.stop_btn)
+        self.layout().insertLayout(0, control_layout); self.scan_btn.clicked.connect(self._start_port_scan); self.stop_btn.clicked.connect(self._stop_port_scan)
     @Slot()
     def _start_port_scan(self):
         if self.scan_thread and self.scan_thread.isRunning(): return
         try:
             start, end = map(int, self.port_range_input.text().strip().split('-'))
-            if not (0 < start <= 65535 and start <= end <= 65535):
-                raise ValueError("Port range out of bounds")
-        except ValueError:
-            QMessageBox.warning(self, "Input Error", "Invalid port range (e.g., 1-1024).")
-            return
-        
-        self.output_text.clear()
-        self._set_buttons_enabled(False)
+            if not (0 < start <= 65535 and start <= end <= 65535): raise ValueError("Port range out of bounds")
+        except ValueError: QMessageBox.warning(self, "Input Error", "Invalid port range (e.g., 1-1024)."); return
+        self.output_text.clear(); self._set_buttons_enabled(False)
         self.scan_thread = NetworkToolThread("port_scan", self.target_input.text().strip(), (start, end))
         self.scan_thread.result_output.connect(self.output_text.insertPlainText)
-        self.scan_thread.scan_complete.connect(lambda: self._set_buttons_enabled(True))
-        self.scan_thread.start()
-
+        self.scan_thread.scan_complete.connect(lambda: self._set_buttons_enabled(True)); self.scan_thread.start()
     @Slot()
     def _stop_port_scan(self):
-        if self.scan_thread and self.scan_thread.isRunning():
-            self.scan_thread.stop()
-            self.scan_thread = None
+        if self.scan_thread and self.scan_thread.isRunning(): self.scan_thread.stop(); self.scan_thread = None
         self._set_buttons_enabled(True)
-    
     def _set_buttons_enabled(self, enabled):
-        self.scan_btn.setEnabled(enabled)
-        self.stop_btn.setEnabled(not enabled)
+        self.scan_btn.setEnabled(enabled); self.stop_btn.setEnabled(not enabled)
 
 class NotepadWidget(QWidget):
-    """A simple rich-text notepad widget with auto-save."""
     def __init__(self, config_manager: ConfigManager, parent=None):
-        super().__init__(parent)
-        self.config_manager = config_manager
-        self.notes_folder = self.config_manager.get_setting("notes_folder")
-        os.makedirs(self.notes_folder, exist_ok=True)
-        self.notepad_file_path = os.path.join(self.notes_folder, "scratchpad.html")
-
-        self.setLayout(QVBoxLayout())
-        self.toolbar = QToolBar()
-        self.notepad_text = QTextEdit()
-        self.layout().addWidget(self.toolbar)
-        self.layout().addWidget(self.notepad_text)
-
-        self._setup_toolbar()
-        self.notepad_text.selectionChanged.connect(self._update_toolbar_state)
-        self.notepad_text.cursorPositionChanged.connect(self._update_toolbar_state)
-
-        self.save_timer = QTimer(self)
-        self.save_timer.setInterval(5000)
-        self.save_timer.setSingleShot(True)
-        self.save_timer.timeout.connect(self._auto_save_note)
-        self.notepad_text.textChanged.connect(self.save_timer.start)
-
-        self._load_note()
-
+        super().__init__(parent); self.config_manager = config_manager
+        self.notes_folder = self.config_manager.get_setting("notes_folder"); os.makedirs(self.notes_folder, exist_ok=True)
+        self.notepad_file_path = os.path.join(self.notes_folder, "scratchpad.html"); self.setLayout(QVBoxLayout())
+        self.toolbar = QToolBar(); self.notepad_text = QTextEdit(); self.layout().addWidget(self.toolbar); self.layout().addWidget(self.notepad_text)
+        self._setup_toolbar(); self.notepad_text.selectionChanged.connect(self._update_toolbar_state); self.notepad_text.cursorPositionChanged.connect(self._update_toolbar_state)
+        self.save_timer = QTimer(self); self.save_timer.setInterval(5000); self.save_timer.setSingleShot(True)
+        self.save_timer.timeout.connect(self._auto_save_note); self.notepad_text.textChanged.connect(self.save_timer.start); self._load_note()
     def _setup_toolbar(self):
         self._bold_action = self._create_format_action("B", "Bold", "Ctrl+B", True, self._set_text_bold)
         self._italic_action = self._create_format_action("I", "Italic", "Ctrl+I", True, self._set_text_italic)
         self._underline_action = self._create_format_action("U", "Underline", "Ctrl+U", True, self._set_text_underline)
-        
-        self.toolbar.addSeparator()
-        self.font_combo = QFontComboBox()
-        self.font_combo.currentFontChanged.connect(self._set_font_family)
-        self.toolbar.addWidget(self.font_combo)
-        
-        self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(6, 72)
-        self.font_size_spin.setValue(10)
-        self.font_size_spin.valueChanged.connect(self._set_font_size)
-        self.toolbar.addWidget(self.font_size_spin)
-
-        self.toolbar.addSeparator()
-        self._create_format_action(None, "Text Color", None, False, self._set_text_color, "color-text")
-        self._create_format_action(None, "Highlight Color", None, False, self._set_highlight_color, "color-fill")
-        
-        self.toolbar.addSeparator()
-        save_as_button = QPushButton("Save As...")
-        save_as_button.clicked.connect(self._save_note_as)
-        self.toolbar.addWidget(save_as_button)
-
+        self.toolbar.addSeparator(); self.font_combo = QFontComboBox(); self.font_combo.currentFontChanged.connect(self._set_font_family); self.toolbar.addWidget(self.font_combo)
+        self.font_size_spin = QSpinBox(); self.font_size_spin.setRange(6, 72); self.font_size_spin.setValue(10); self.font_size_spin.valueChanged.connect(self._set_font_size); self.toolbar.addWidget(self.font_size_spin)
+        self.toolbar.addSeparator(); self._create_format_action(None, "Text Color", None, False, self._set_text_color, "color-text"); self._create_format_action(None, "Highlight Color", None, False, self._set_highlight_color, "color-fill")
+        self.toolbar.addSeparator(); save_as_button = QPushButton("Save As..."); save_as_button.clicked.connect(self._save_note_as); self.toolbar.addWidget(save_as_button)
     def _create_format_action(self, text, tooltip, shortcut, checkable, triggered_func, icon_name=None):
-        icon = QIcon.fromTheme(icon_name) if icon_name else QIcon()
-        action = QAction(icon, text, self) if text else QAction(icon, tooltip, self)
-        action.setToolTip(tooltip)
+        icon = QIcon.fromTheme(icon_name) if icon_name else QIcon(); action = QAction(icon, text, self) if text else QAction(icon, tooltip, self)
+        action.setToolTip(tooltip); action.setCheckable(checkable); action.triggered.connect(triggered_func)
         if shortcut: action.setShortcut(shortcut)
-        action.setCheckable(checkable)
-        action.triggered.connect(triggered_func)
-        self.toolbar.addAction(action)
-        return action
-    
+        self.toolbar.addAction(action); return action
     def _merge_format(self, char_format: QTextCharFormat):
-        cursor = self.notepad_text.textCursor()
-        if not cursor.hasSelection():
-            cursor.select(QTextCursor.SelectionType.WordUnderCursor)
-        cursor.mergeCharFormat(char_format)
-        self.notepad_text.mergeCurrentCharFormat(char_format)
-
-    def _set_text_bold(self, checked):
-        fmt = QTextCharFormat()
-        fmt.setFontWeight(QFont.Weight.Bold if checked else QFont.Weight.Normal)
-        self._merge_format(fmt)
-        
-    def _set_text_italic(self, checked):
-        fmt = QTextCharFormat()
-        fmt.setFontItalic(checked)
-        self._merge_format(fmt)
-
-    def _set_text_underline(self, checked):
-        fmt = QTextCharFormat()
-        fmt.setFontUnderline(checked)
-        self._merge_format(fmt)
-    
-    def _set_font_family(self, font):
-        fmt = QTextCharFormat()
-        fmt.setFontFamily(font.family())
-        self._merge_format(fmt)
-
-    def _set_font_size(self, size):
-        fmt = QTextCharFormat()
-        fmt.setFontPointSize(size)
-        self._merge_format(fmt)
-        
+        cursor = self.notepad_text.textCursor();
+        if not cursor.hasSelection(): cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        cursor.mergeCharFormat(char_format); self.notepad_text.mergeCurrentCharFormat(char_format)
+    def _set_text_bold(self, checked): fmt = QTextCharFormat(); fmt.setFontWeight(QFont.Weight.Bold if checked else QFont.Weight.Normal); self._merge_format(fmt)
+    def _set_text_italic(self, checked): fmt = QTextCharFormat(); fmt.setFontItalic(checked); self._merge_format(fmt)
+    def _set_text_underline(self, checked): fmt = QTextCharFormat(); fmt.setFontUnderline(checked); self._merge_format(fmt)
+    def _set_font_family(self, font): fmt = QTextCharFormat(); fmt.setFontFamily(font.family()); self._merge_format(fmt)
+    def _set_font_size(self, size): fmt = QTextCharFormat(); fmt.setFontPointSize(size); self._merge_format(fmt)
     def _set_text_color(self):
         color = QColorDialog.getColor(self.notepad_text.textColor(), self)
-        if color.isValid():
-            fmt = QTextCharFormat()
-            fmt.setForeground(color)
-            self._merge_format(fmt)
-            
+        if color.isValid(): fmt = QTextCharFormat(); fmt.setForeground(color); self._merge_format(fmt)
     def _set_highlight_color(self):
         color = QColorDialog.getColor(self.notepad_text.textBackgroundColor(), self)
-        if color.isValid():
-            fmt = QTextCharFormat()
-            fmt.setBackground(color)
-            self._merge_format(fmt)
-    
+        if color.isValid(): fmt = QTextCharFormat(); fmt.setBackground(color); self._merge_format(fmt)
     @Slot()
     def _update_toolbar_state(self):
-        fmt = self.notepad_text.currentCharFormat()
-        self._bold_action.setChecked(fmt.fontWeight() == QFont.Weight.Bold)
-        self._italic_action.setChecked(fmt.fontItalic())
-        self._underline_action.setChecked(fmt.fontUnderline())
-        self.font_combo.setCurrentFont(fmt.font())
-        self.font_size_spin.setValue(int(fmt.fontPointSize()))
-
+        fmt = self.notepad_text.currentCharFormat(); self._bold_action.setChecked(fmt.fontWeight() == QFont.Weight.Bold); self._italic_action.setChecked(fmt.fontItalic())
+        self._underline_action.setChecked(fmt.fontUnderline()); self.font_combo.setCurrentFont(fmt.font()); self.font_size_spin.setValue(int(fmt.fontPointSize()))
     def _load_note(self):
         if os.path.exists(self.notepad_file_path):
             try:
-                with open(self.notepad_file_path, 'r', encoding='utf-8') as f:
-                    self.notepad_text.setHtml(f.read())
-            except Exception as e:
-                print(f"Could not load notes: {e}")
-
+                with open(self.notepad_file_path, 'r', encoding='utf-8') as f: self.notepad_text.setHtml(f.read())
+            except Exception: pass
     @Slot()
     def _auto_save_note(self): self._save_note(self.notepad_file_path)
-    
     def _save_note(self, filepath):
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(self.notepad_text.toHtml())
-        except Exception as e:
-            QMessageBox.warning(self, "Save Error", f"Failed to save notes: {e}")
-
+            with open(filepath, 'w', encoding='utf-8') as f: f.write(self.notepad_text.toHtml())
+        except Exception as e: QMessageBox.warning(self, "Save Error", f"Failed to save notes: {e}")
     @Slot()
     def _save_note_as(self):
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Notes As", self.notes_folder, "HTML Files (*.html);;Text Files (*.txt)")
         if file_path: self._save_note(file_path)
+    def save_and_stop(self): self.save_timer.stop(); self._save_note(self.notepad_file_path)
 
-    def save_and_stop(self):
-        self.save_timer.stop()
-        self._save_note(self.notepad_file_path)
+class DeviceNode(QGraphicsItemGroup):
+    def __init__(self, ip, mac):
+        super().__init__(); self.ip, self.mac = ip, mac
+        self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable); self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+        circle = QGraphicsEllipseItem(-30, -30, 60, 60); circle.setBrush(QBrush(QColor("#fec301"))); circle.setPen(QPen(Qt.black, 2)); self.addToGroup(circle)
+        label = QGraphicsTextItem(ip); label.setPos(-label.boundingRect().width() / 2, 35); self.addToGroup(label)
+    def __repr__(self): return f"<DeviceNode ip={self.ip}>"
+
+class TopologyMapperWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent); self.discovery_worker = None; layout = QVBoxLayout(self); control_bar = QHBoxLayout()
+        self.scan_btn = QPushButton("Start Network Discovery"); self.status_label = QLabel("Ready to scan."); self.progress_bar = QProgressBar(); self.progress_bar.setVisible(False)
+        control_bar.addWidget(self.scan_btn); control_bar.addWidget(self.status_label); control_bar.addStretch()
+        layout.addLayout(control_bar); layout.addWidget(self.progress_bar); self.scene = QGraphicsScene(); self.view = QGraphicsView(self.scene)
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing); layout.addWidget(self.view); self.scan_btn.clicked.connect(self._start_discovery)
+    @Slot()
+    def _start_discovery(self):
+        if self.discovery_worker and self.discovery_worker.isRunning(): return
+        self.scan_btn.setEnabled(False); self.scene.clear(); self.status_label.setText("Scanning network..."); self.progress_bar.setVisible(True); self.progress_bar.setRange(0, 0)
+        self.discovery_worker = DiscoveryWorker(); self.discovery_worker.host_found.connect(self._add_host_node); self.discovery_worker.scan_finished.connect(self._on_scan_finished)
+        self.discovery_worker.status_update.connect(self.status_label.setText); self.discovery_worker.start()
+    @Slot(dict)
+    def _add_host_node(self, host_data: dict):
+        ip, mac = host_data.get('ip', 'N/A'), host_data.get('mac', 'N/A')
+        for item in self.scene.items():
+            if isinstance(item, DeviceNode) and item.ip == ip: return
+        node = DeviceNode(ip, mac); self.scene.addItem(node)
+        import random; x = random.randint(-400, 400); y = random.randint(-300, 300); node.setPos(x, y)
+    @Slot(str)
+    def _on_scan_finished(self, message: str):
+        self.status_label.setText(message); self.scan_btn.setEnabled(True); self.progress_bar.setVisible(False)
+    def apply_settings(self, settings: dict): pass
+
+class VulnerabilityScannerWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent); self.worker = None; layout = QVBoxLayout(self)
+        input_layout = QHBoxLayout(); self.keyword_input = QLineEdit(); self.keyword_input.setPlaceholderText("e.g., Apache 2.4.51 or OpenSSH 8.2")
+        self.search_btn = QPushButton("Search for CVEs"); input_layout.addWidget(QLabel("Software Keyword:")); input_layout.addWidget(self.keyword_input); input_layout.addWidget(self.search_btn)
+        layout.addLayout(input_layout); self.results_table = QTableWidget(); self.results_table.setColumnCount(4)
+        self.results_table.setHorizontalHeaderLabels(["CVE ID", "Severity", "Description", "Published"]); self.results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows); self.results_table.setEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers)
+        self.results_table.setWordWrap(True); self.results_table.verticalHeader().setVisible(False); layout.addWidget(self.results_table)
+        self.status_label = QLabel("Ready. Search the NIST NVD for published vulnerabilities."); layout.addWidget(self.status_label)
+        self.search_btn.clicked.connect(self.start_search); self.keyword_input.returnPressed.connect(self.start_search)
+    def start_search(self):
+        keyword = self.keyword_input.text().strip()
+        if not keyword: QMessageBox.warning(self, "Input Error", "Please enter a software product to search for."); return
+        if self.worker and self.worker.isRunning(): return
+        self.search_btn.setEnabled(False); self.status_label.setText(f"Searching for vulnerabilities related to '{keyword}'..."); self.results_table.setRowCount(0)
+        self.worker = CveSearchWorker(keyword); self.worker.result_ready.connect(self.display_results); self.worker.error_occurred.connect(self.on_error); self.worker.start()
+    @Slot(dict)
+    def display_results(self, data):
+        self.search_btn.setEnabled(True); vulnerabilities = data.get('vulnerabilities', [])
+        if not vulnerabilities: self.status_label.setText(f"No vulnerabilities found for '{self.keyword_input.text().strip()}'."); return
+        self.results_table.setRowCount(len(vulnerabilities))
+        for row, item in enumerate(vulnerabilities):
+            cve = item.get('cve', {}); cve_id = cve.get('id', 'N/A'); published_date = cve.get('published', 'N/A').split('T')[0]
+            description = next((d.get('value', 'N/A') for d in cve.get('descriptions', []) if d.get('lang') == 'en'), 'N/A')
+            severity = "N/A"
+            if cvss_metrics := cve.get('metrics', {}).get('cvssMetricV31', []):
+                base_severity = cvss_metrics[0].get('cvssData', {}).get('baseSeverity', 'N/A'); base_score = cvss_metrics[0].get('cvssData', {}).get('baseScore', 'N/A')
+                severity = f"{base_severity} ({base_score})"
+            self.results_table.setItem(row, 0, QTableWidgetItem(cve_id)); self.results_table.setItem(row, 1, QTableWidgetItem(severity))
+            self.results_table.setItem(row, 2, QTableWidgetItem(description)); self.results_table.setItem(row, 3, QTableWidgetItem(published_date))
+        self.results_table.resizeRowsToContents(); self.status_label.setText(f"Search complete. Displaying {len(vulnerabilities)} results.")
+    @Slot(str)
+    def on_error(self, error_message): self.search_btn.setEnabled(True); self.status_label.setText(f"Error: {error_message}")
+    def apply_settings(self, settings: dict): pass
+
+class PasswordCheckerWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent); layout = QVBoxLayout(self); input_layout = QHBoxLayout(); self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password); self.show_password_btn = QPushButton("Show"); self.show_password_btn.setCheckable(True)
+        input_layout.addWidget(QLabel("Password:")); input_layout.addWidget(self.password_input); input_layout.addWidget(self.show_password_btn)
+        layout.addLayout(input_layout); self.results_text = QTextEdit(); self.results_text.setReadOnly(True); layout.addWidget(self.results_text)
+        self.password_input.textChanged.connect(self.check_password); self.show_password_btn.toggled.connect(self.toggle_password_visibility); self.check_password("")
+    @Slot(str)
+    def check_password(self, password):
+        if not password: self.results_text.setPlainText("Enter a password to analyze its strength."); return
+        results = zxcvbn(password); score = results['score']; crack_time = results['crack_times_display']['offline_slow_hashing_1e4_per_second']
+        feedback = results['feedback']['warning']; suggestions = "\n".join(f"- {s}" for s in results['feedback']['suggestions'])
+        score_text = ["Very Weak", "Weak", "Fair", "Strong", "Very Strong"]; report = (f"--- Password Strength Analysis ---\n\nScore: {score}/4 ({score_text[score]})\n"
+                  f"Estimated time to crack: {crack_time}\n\n")
+        if feedback: report += f"Warning:\n- {feedback}\n\n"
+        if suggestions: report += f"Suggestions:\n{suggestions}"
+        self.results_text.setPlainText(report)
+    @Slot(bool)
+    def toggle_password_visibility(self, checked):
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)
+    def apply_settings(self, settings: dict): pass
+
+class HashToolWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent); layout = QVBoxLayout(self); self.input_text = QPlainTextEdit(); self.input_text.setPlaceholderText("Enter text here to hash...")
+        layout.addWidget(self.input_text, 1); control_layout = QHBoxLayout(); self.hash_algo_combo = QComboBox(); self.hash_algo_combo.addItems(["MD5", "SHA1", "SHA256", "SHA512"])
+        self.calculate_btn = QPushButton("Calculate Hashes"); self.load_file_btn = QPushButton("Hash a File..."); control_layout.addWidget(QLabel("Algorithm (for cracker):"))
+        control_layout.addWidget(self.hash_algo_combo); control_layout.addWidget(self.calculate_btn); control_layout.addWidget(self.load_file_btn); layout.addLayout(control_layout)
+        self.output_layout = QHBoxLayout(); self.md5_output = self._create_output_field("MD5:"); self.sha1_output = self._create_output_field("SHA1:")
+        self.sha256_output = self._create_output_field("SHA256:"); self.sha512_output = self._create_output_field("SHA512:"); layout.addLayout(self.output_layout)
+        cracker_layout = QHBoxLayout(); self.hash_to_crack_input = QLineEdit(); self.hash_to_crack_input.setPlaceholderText("Paste hash here to crack...")
+        self.wordlist_btn = QPushButton("Load Wordlist..."); self.crack_btn = QPushButton("Crack Hash"); cracker_layout.addWidget(QLabel("Crack Hash:"))
+        cracker_layout.addWidget(self.hash_to_crack_input); cracker_layout.addWidget(self.wordlist_btn); cracker_layout.addWidget(self.crack_btn); layout.addLayout(cracker_layout)
+        self.cracker_status = QLabel("Ready. Load a wordlist to attempt dictionary attack."); layout.addWidget(self.cracker_status); self.wordlist_path = None
+        self.calculate_btn.clicked.connect(self._calculate_text_hashes); self.load_file_btn.clicked.connect(self._load_and_hash_file)
+        self.wordlist_btn.clicked.connect(self._load_wordlist); self.crack_btn.clicked.connect(self._start_crack)
+    def _create_output_field(self, label_text):
+        h_layout = QHBoxLayout(); h_layout.addWidget(QLabel(label_text)); line_edit = QLineEdit(); line_edit.setReadOnly(True); h_layout.addWidget(line_edit); self.output_layout.addLayout(h_layout); return line_edit
+    @Slot()
+    def _calculate_text_hashes(self):
+        text = self.input_text.toPlainText().encode('utf-8')
+        if not text: return
+        self.md5_output.setText(hashlib.md5(text).hexdigest()); self.sha1_output.setText(hashlib.sha1(text).hexdigest())
+        self.sha256_output.setText(hashlib.sha256(text).hexdigest()); self.sha512_output.setText(hashlib.sha512(text).hexdigest())
+    @Slot()
+    def _load_and_hash_file(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select a file to hash")
+        if not filepath: return
+        self.input_text.setPlainText(f"--- Hashing File ---\n{filepath}"); md5, sha1, sha256, sha512 = hashlib.md5(), hashlib.sha1(), hashlib.sha256(), hashlib.sha512()
+        try:
+            with open(filepath, 'rb') as f:
+                while chunk := f.read(8192): md5.update(chunk); sha1.update(chunk); sha256.update(chunk); sha512.update(chunk)
+            self.md5_output.setText(md5.hexdigest()); self.sha1_output.setText(sha1.hexdigest()); self.sha256_output.setText(sha256.hexdigest()); self.sha512_output.setText(sha512.hexdigest())
+        except Exception as e: QMessageBox.critical(self, "File Error", f"Could not read or hash the file:\n{e}")
+    @Slot()
+    def _load_wordlist(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select a Wordlist File", "", "Text Files (*.txt);;All Files (*)")
+        if filepath: self.wordlist_path = filepath; self.cracker_status.setText(f"Loaded wordlist: {os.path.basename(filepath)}")
+    @Slot()
+    def _start_crack(self):
+        hash_to_crack = self.hash_to_crack_input.text().strip().lower()
+        if not self.wordlist_path: QMessageBox.warning(self, "Wordlist Missing", "Please load a wordlist file first."); return
+        if not hash_to_crack: QMessageBox.warning(self, "Input Missing", "Please paste a hash to crack."); return
+        algo_name = self.hash_algo_combo.currentText().lower(); hash_func = getattr(hashlib, algo_name); self.cracker_status.setText("Cracking... this may take a while."); QApplication.processEvents()
+        found = False
+        try:
+            with open(self.wordlist_path, 'r', errors='ignore') as f:
+                for line in f:
+                    word = line.strip(); hashed_word = hash_func(word.encode('utf-8')).hexdigest()
+                    if hashed_word == hash_to_crack:
+                        self.cracker_status.setText(f"Success! Password found: {word}"); QMessageBox.information(self, "Success", f"The password for the hash is:\n\n{word}"); found = True; break
+            if not found: self.cracker_status.setText("Failed. Password not found in the wordlist.")
+        except Exception as e: self.cracker_status.setText(f"Error: Could not process wordlist."); QMessageBox.critical(self, "Error", f"An error occurred: {e}")
+    def apply_settings(self, settings: dict): pass
