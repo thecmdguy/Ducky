@@ -1,4 +1,4 @@
-# --- QSS Theme Definitions ---
+# ducky_app/ui/themes.py
 
 DUCKY_YELLOW = "#fec301"
 DUCKY_YELLOW_HOVER = "#e6b100"
@@ -15,7 +15,7 @@ QMenu {{ background-color: #2e3436; color: #d3d7cf; border: 1px solid #454d50; }
 QMenu::item:selected {{ background-color: {DUCKY_YELLOW}; color: black; }}
 QDockWidget {{ background-color: #3b4042; color: #d3d7cf; border: 1px solid #454d50; }}
 QDockWidget::title {{ background: #454d50; padding-left: 5px; color: #d3d7cf; }}
-QTextEdit, QLineEdit, QComboBox, QSpinBox, QFontComboBox {{
+QTextEdit, QLineEdit, QComboBox, QSpinBox, QFontComboBox, QTableWidget {{
     background-color: #3b4042; border: 1px solid #454d50; color: #d3d7cf;
     padding: 3px; selection-background-color: {DUCKY_YELLOW};
 }}
@@ -61,6 +61,28 @@ QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
 }}
 QScrollBar::add-line, QScrollBar::sub-line,
 QScrollBar::add-page, QScrollBar::sub-page {{ border: none; background: none; }}
+QTabWidget::pane {{
+    border-top: 2px solid #454d50;
+}}
+QTabBar::tab {{
+    background: #3b4042;
+    border: 1px solid #454d50;
+    border-bottom-color: #3b4042;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    min-width: 8ex;
+    padding: 4px 8px;
+}}
+QTabBar::tab:selected, QTabBar::tab:hover {{
+    background: #454d50;
+}}
+QTabBar::tab:selected {{
+    border-color: #454d50;
+    border-bottom-color: #454d50;
+}}
+QTabBar::tab:!selected {{
+    margin-top: 2px;
+}}
 """
 
 LIGHT_THEME_QSS = """
@@ -74,7 +96,7 @@ QMainWindow, QMenuBar, QStatusBar, QDockWidget::title, QHeaderView::section {
 QMenuBar::item:selected, QMenu::item:selected { background-color: #1E90FF; color: white; }
 QMenu { background-color: #FFFFFF; color: #333333; border: 1px solid #CCCCCC; }
 QDockWidget { background-color: #F8F8F8; color: #333333; border: 1px solid #CCCCCC; }
-QTextEdit, QLineEdit, QComboBox, QSpinBox, QFontComboBox, QTreeWidget {
+QTextEdit, QLineEdit, QComboBox, QSpinBox, QFontComboBox, QTreeWidget, QTableWidget {
     background-color: #FFFFFF; border: 1px solid #CCCCCC; color: #333333;
     padding: 3px; selection-background-color: #1E90FF; border-radius: 4px;
 }
@@ -107,4 +129,12 @@ QScrollBar:vertical, QScrollBar:horizontal {
 }
 QScrollBar::add-line, QScrollBar::sub-line,
 QScrollBar::add-page, QScrollBar::sub-page { border: none; background: none; }
+QTabWidget::pane { border-top: 2px solid #CCCCCC; }
+QTabBar::tab {
+    background: #E0E0E0; border: 1px solid #CCCCCC; border-bottom: none;
+    border-top-left-radius: 4px; border-top-right-radius: 4px;
+    min-width: 8ex; padding: 4px 8px;
+}
+QTabBar::tab:selected, QTabBar::tab:hover { background: #F8F8F8; }
+QTabBar::tab:!selected { margin-top: 2px; }
 """

@@ -22,17 +22,17 @@ Ducky is a powerful, Desktop application that combines several essential network
 ![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/screenshot.png?raw=true)
 *(A screenshot of the Ducky application in action with the dark theme)*
 
-## ✨ Features
+##  Features
 
-*   **🔌 Serial Terminal**: Connect to routers, switches, and other devices with a full-featured serial terminal. Log your sessions for later review.
-*   **📂 Session Manager**: Save and organize your terminal sessions in a hierarchical folder structure. Rename, delete, and create new folders directly from the UI.
-*   **🔢 Subnet Calculator**: Quickly calculate IPv4 and IPv6 subnets, including network addresses, usable host ranges, and broadcast addresses.
-*   **📡 Network Monitor**: Get a quick overview of your local system's network interfaces and run essential diagnostics like `ping` and `traceroute` against any target.
-*   **🔍 Port Scanner**: Scan a target IP address for open TCP ports within a specified range.
-*   **📝 Rich-Text Notepad**: Keep notes, code snippets, and reminders handy in a dockable widget with formatting tools and auto-save.
-*   **🎨 Customizable UI**: Switch between a sleek dark theme (default) and a clean light theme. Customize terminal colors and fonts to your liking.
+*   ** Serial Terminal**: Connect to routers, switches, and other devices with a full-featured serial terminal. Log your sessions for later review.
+*   ** Session Manager**: Save and organize your terminal sessions in a hierarchical folder structure. Rename, delete, and create new folders directly from the UI.
+*   ** Subnet Calculator**: Quickly calculate IPv4 and IPv6 subnets, including network addresses, usable host ranges, and broadcast addresses.
+*   ** Network Monitor**: Get a quick overview of your local system's network interfaces and run essential diagnostics like `ping` and `traceroute` against any target.
+*   ** Port Scanner**: Scan a target IP address for open TCP ports within a specified range.
+*   ** Rich-Text Notepad**: Keep notes, code snippets, and reminders handy in a dockable widget with formatting tools and auto-save.
+*   ** Customizable UI**: Switch between a sleek dark theme (default) and a clean light theme. Customize terminal colors and fonts to your liking.
 
-## 🚀 Getting Started
+##  Getting Started
 
 Follow these instructions to get Ducky running on your local machine.
 
