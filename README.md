@@ -31,7 +31,7 @@ If you find Ducky useful and would like to support its development, consider mak
 </p>
 ```
 
-![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/screenshot.png?raw=true)
+![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/screen.png?raw=true)
 *(A screenshot of the Ducky application in action with the dark theme)*
 
 ##  Features
