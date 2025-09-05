@@ -9,8 +9,7 @@ from ducky_app.ui.main_window import DuckyMainWindow
 def run():
     """Initializes and runs the Ducky application."""
     app = QApplication(sys.argv)
-    
-    # Pass the base directory to find the icon
+
     base_dir = os.path.dirname(os.path.abspath(__file__))
     icon_path = os.path.join(base_dir, "ducky_icon.png")
     
