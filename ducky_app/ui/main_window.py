@@ -64,7 +64,7 @@ class DuckyMainWindow(QMainWindow):
             splash_pixmap = QPixmap(splash_image_path)
             splash = QSplashScreen(splash_pixmap)
             splash.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
-            splash.setStyleSheet("QLabel { color: white; }") # Set status text color
+            splash.setStyleSheet("QLabel { color: white; }") 
         else:
             splash = QSplashScreen()
             splash.showMessage("Loading...", Qt.AlignmentFlag.AlignCenter, Qt.GlobalColor.white)
