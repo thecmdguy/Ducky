@@ -254,9 +254,9 @@ class BaseTerminalWidget(QWidget):
             QApplication.beep()
             # Optionally list matches
             self.output_text.append("\n" + "  ".join(matches))
-            self.output_text.append(line_text) # Re-print current line
+            self.output_text.append(line_text)
             if self.is_connected:
-                self.client.write(b'\n') # Send newline to get new prompt
+                self.client.write(b'\n')
 
     @Slot(bytes)
     def _handle_data_received(self, data: bytes):
