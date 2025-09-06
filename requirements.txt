@@ -1,8 +1,0 @@
-PySide6
-pyserial
-psutil
-scapy
-requests
-zxcvbn
-paramiko
-telnetlib3
