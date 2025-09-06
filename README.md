@@ -10,8 +10,8 @@
     <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?logo=python&logoColor=yellow" alt="Python Version">
     <img src="https://img.shields.io/badge/Qt_for_Python-PySide6-brightgreen.svg?logo=qt" alt="PySide6">
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-    <a href="https://github.com/<Your-GitHub-Username>/Ducky_Project/issues"><img src="https://img.shields.io/github/issues/Your-GitHub-Username/Ducky_Project" alt="Issues"></a>
-    <a href="https://github.com/<Your-GitHub-Username>/Ducky_Project/pulls"><img src="https://img.shields.io/github/issues-pr/Your-GitHub-Username/Ducky_Project" alt="Pull Requests"></a>
+    <a href="https://github.com/thecmdguy/Ducky/issues"><img src="https://img.shields.io/github/issues/Your-GitHub-Username/Ducky_Project" alt="Issues"></a>
+    <a href="https://github.com/thecmdguy/Ducky/pulls"><img src="https://img.shields.io/github/issues-pr/Your-GitHub-Username/Ducky_Project" alt="Pull Requests"></a>
   </p>
 </div>
 
@@ -58,7 +58,7 @@ Follow these instructions to get Ducky running on your local machine.
 1.  **Clone the repository:**
     Open Command Prompt or PowerShell and run:
     ```bash
-    git clone https://github.com/<Your-GitHub-Username>/Ducky_Project.git
+    git clone https://github.com/thecmdguy/Ducky.git
     cd Ducky_Project
     ```
     *(If you don't have git, you can download the project as a ZIP file from GitHub and extract it).*
