@@ -1,10 +1,3 @@
-Of course. The old `README.md` is now completely out of date because of the professional packaging changes we made. The installation and running instructions are wrong, and it's missing some of the new features.
-
-I will update it for you with the correct, modern instructions. This new version will be much simpler and more professional for new users.
-
-Here is the updated `README.md` content.
-
----
 
 <div align="center">
   <img src="src/ducky_app/assets/ducky_icon.png" alt="Ducky Logo" width="120" />
@@ -38,7 +31,7 @@ If you find Ducky useful and would like to support its development, consider mak
 </a>
 </p>
 
-![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/screen.png?raw=true)
+![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/src/ducky_app/assets/banner.png?raw=true)
 *(A screenshot of the Ducky application in action with the dark theme)*
 
 ## Features
