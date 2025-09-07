@@ -78,3 +78,22 @@ Thanks to the new packaging setup, installation and running have been simplified
     ducky
     ```
 After the initial installation, you just need to activate the virtual environment (`.\venv\Scripts\activate`) and run `ducky` to start the application.
+
+### Installation & Running (for Users)
+
+If you have downloaded the source code, installation is simple.
+
+1.  **Extract the ZIP file** containing the project.
+2.  **Double-click the `setup.bat` file.**
+
+This will automatically create a virtual environment, install all dependencies, and place a "Ducky Network Tool" shortcut on your desktop. You can then use this shortcut to start the application.
+
+### For Developers
+
+If you intend to contribute to the project, follow the development setup:
+
+1.  Clone the repository: `git clone https://github.com/thecmdguy/Ducky.git`
+2.  Navigate into the `Ducky` directory.
+3.  Create and activate a virtual environment: `python -m venv venv` and `.\venv\Scripts\activate`
+4.  Install the project in editable mode: `pip install -e .`
+5.  Run the application with the `ducky` command.
