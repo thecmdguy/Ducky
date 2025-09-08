@@ -14,11 +14,11 @@ from PySide6.QtWidgets import (
     QLabel, QToolBar, QFontComboBox, QSpinBox, QMessageBox, QFileDialog,
     QColorDialog, QGraphicsView, QGraphicsScene, QGraphicsItemGroup, QGraphicsEllipseItem,
     QGraphicsTextItem, QProgressBar, QComboBox, QPlainTextEdit, QTableWidget, QHeaderView,
-    QAbstractItemView, QTableWidgetItem, QApplication
+    QAbstractItemView, QTableWidgetItem, QApplication, QGraphicsPathItem
 )
 from PySide6.QtGui import (
     QPalette, QColor, QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QBrush,
-    QKeyEvent, QPainter, QPen
+    QKeyEvent, QPainter, QPen, QPainterPath, QRadialGradient
 )
 from PySide6.QtCore import Signal, Slot, QTimer, Qt, QRectF
 from ducky_app.core.config_manager import ConfigManager
@@ -224,7 +224,7 @@ class BaseTerminalWidget(QWidget):
             prompt = line_text[:prompt_end]
 
             cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
-            cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, prompt_end)
+            cursor.movePosition(QTextCursor.MoveMode.MoveAnchor, prompt_end)
             cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
             cursor.removeSelectedText()
             cursor.insertText(command)
@@ -430,28 +430,60 @@ class DeviceNode(QGraphicsItemGroup):
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
         
-        circle_color = QColor("#fec301")
-        if description and ("switch" in description.lower() or "cisco ios" in description.lower()):
-            circle_color = QColor("#3498db")
+        base_color = QColor("#fec301")
+        if description and ("switch" in description.lower() or "cisco" in description.lower()):
+            base_color = QColor("#3498db")
         elif description and "router" in description.lower():
-            circle_color = QColor("#2ecc71")
+            base_color = QColor("#2ecc71")
 
-        circle = QGraphicsEllipseItem(-35, -35, 70, 70)
-        circle.setBrush(QBrush(circle_color))
-        circle.setPen(QPen(Qt.GlobalColor.black, 2))
+        gradient = QRadialGradient(0, 0, 30)
+        gradient.setColorAt(0, base_color.lighter(130))
+        gradient.setColorAt(1, base_color)
+        
+        circle = QGraphicsEllipseItem(-30, -30, 60, 60)
+        circle.setBrush(QBrush(gradient))
+        circle.setPen(QPen(Qt.GlobalColor.black, 1))
         self.addToGroup(circle)
         
-        display_text = self.hostname if self.hostname else self.ip
-        label = QGraphicsTextItem(display_text)
-        font = QFont("Sans Serif", 10)
+        self.create_icon(description)
+        
+        display_text = f"<b>{self.hostname}</b><br><small>{self.ip}</small>" if self.hostname else self.ip
+        label = QGraphicsTextItem()
+        label.setHtml(f"<div style='text-align: center;'>{display_text}</div>")
+        font = QFont("Sans Serif", 8)
         label.setFont(font)
-        label.setPos(-label.boundingRect().width() / 2, 40)
+        label.setDefaultTextColor(Qt.GlobalColor.white if base_color.lightness() < 128 else Qt.GlobalColor.black)
+        label.setPos(-label.boundingRect().width() / 2, 5)
         self.addToGroup(label)
         
         tooltip = f"IP: {self.ip}\nMAC: {self.mac}"
         if self.hostname: tooltip += f"\nHost: {self.hostname}"
         if self.description: tooltip += f"\nDesc: {self.description}"
         self.setToolTip(tooltip)
+
+    def create_icon(self, description):
+        icon_path = QPainterPath()
+        desc = description.lower() if description else ""
+
+        if "switch" in desc or "cisco" in desc:
+            icon_path.moveTo(-15, -5); icon_path.lineTo(15, -5)
+            icon_path.moveTo(-12, 0); icon_path.lineTo(-10, -5); icon_path.lineTo(-8, 0)
+            icon_path.moveTo(-5, 0); icon_path.lineTo(-3, -5); icon_path.lineTo(-1, 0)
+            icon_path.moveTo(2, 0); icon_path.lineTo(4, -5); icon_path.lineTo(6, 0)
+            icon_path.moveTo(9, 0); icon_path.lineTo(11, -5); icon_path.lineTo(13, 0)
+        elif "router" in desc:
+            icon_path.addEllipse(-10, -10, 20, 20)
+            icon_path.moveTo(-15, 0); icon_path.lineTo(15, 0)
+            icon_path.moveTo(0, -15); icon_path.lineTo(0, 15)
+        else:
+            icon_path.addRect(-12, -8, 24, 16)
+            icon_path.moveTo(-9, -4); icon_path.lineTo(-9, -2)
+            icon_path.moveTo(-6, -4); icon_path.lineTo(-6, -2)
+
+        icon = QGraphicsPathItem(icon_path)
+        icon.setPen(QPen(Qt.GlobalColor.white, 2))
+        icon.setPos(0, -10)
+        self.addToGroup(icon)
 
     def mousePressEvent(self, event):
         title = f"Device Information: {self.hostname or self.ip}"
@@ -464,9 +496,6 @@ class DeviceNode(QGraphicsItemGroup):
         
         QMessageBox.information(self.parent_widget, title, info_text)
         super().mousePressEvent(event)
-
-    def __repr__(self):
-        return f"<DeviceNode ip={self.ip} name={self.hostname}>"
 
 class TopologyMapperWidget(QWidget):
     def __init__(self, parent=None):
@@ -487,6 +516,7 @@ class TopologyMapperWidget(QWidget):
         self.scene = QGraphicsScene()
         self.view = QGraphicsView(self.scene)
         self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         layout.addWidget(self.view)
         self.scan_btn.clicked.connect(self._start_discovery)
 
@@ -527,13 +557,16 @@ class TopologyMapperWidget(QWidget):
             return
             
         num_nodes = len(self.nodes)
-        radius = 50 + (num_nodes * 25)
-        
-        for i, node in enumerate(self.nodes):
-            angle = (i / num_nodes) * 2 * math.pi
-            x = radius * math.cos(angle)
-            y = radius * math.sin(angle)
-            node.setPos(x, y)
+        if num_nodes == 1:
+            self.nodes[0].setPos(0,0)
+        else:
+            radius = 35 * num_nodes
+            angle_step = (2 * math.pi) / num_nodes
+            for i, node in enumerate(self.nodes):
+                angle = i * angle_step
+                x = radius * math.cos(angle)
+                y = radius * math.sin(angle)
+                node.setPos(x, y)
         
         QTimer.singleShot(100, self.fit_view)
 
@@ -655,89 +688,3 @@ class HashToolWidget(QWidget):
             if not found: self.cracker_status.setText("Failed. Password not found in the wordlist.")
         except Exception as e: self.cracker_status.setText(f"Error: Could not process wordlist."); QMessageBox.critical(self, "Error", f"An error occurred: {e}")
     def apply_settings(self, settings: dict): pass
-
-class ConnectedDevicesWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.discovery_worker = None
-        self.device_map = {}
-        
-        layout = QVBoxLayout(self)
-        control_bar = QHBoxLayout()
-        self.scan_btn = QPushButton("Scan for Devices")
-        self.status_label = QLabel("Ready to scan the local network.")
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        
-        control_bar.addWidget(self.scan_btn)
-        control_bar.addWidget(self.status_label)
-        control_bar.addStretch()
-        layout.addLayout(control_bar)
-        layout.addWidget(self.progress_bar)
-        
-        self.devices_table = QTableWidget()
-        self.devices_table.setColumnCount(3)
-        self.devices_table.setHorizontalHeaderLabels(["IP Address", "MAC Address", "Hostname"])
-        self.devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.devices_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.devices_table.setEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers)
-        self.devices_table.setSortingEnabled(True)
-        layout.addWidget(self.devices_table)
-        
-        self.scan_btn.clicked.connect(self._start_discovery)
-
-    @Slot()
-    def _start_discovery(self):
-        if self.discovery_worker and self.discovery_worker.isRunning():
-            return
-            
-        self.scan_btn.setEnabled(False)
-        self.devices_table.setRowCount(0)
-        self.device_map.clear()
-        self.status_label.setText("Scanning network...")
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)
-        
-        self.discovery_worker = DiscoveryWorker()
-        self.discovery_worker.host_found.connect(self._add_host_entry)
-        self.discovery_worker.scan_finished.connect(self._on_scan_finished)
-        self.discovery_worker.status_update.connect(self.status_label.setText)
-        self.discovery_worker.start()
-
-    @Slot(dict)
-    def _add_host_entry(self, host_data):
-        ip = host_data.get('ip', 'N/A')
-        mac = host_data.get('mac', 'N/A')
-        
-        if ip in self.device_map:
-            return
-
-        row_position = self.devices_table.rowCount()
-        self.devices_table.insertRow(row_position)
-        
-        ip_item = QTableWidgetItem(ip)
-        mac_item = QTableWidgetItem(mac)
-        
-        self.devices_table.setItem(row_position, 0, ip_item)
-        self.devices_table.setItem(row_position, 1, mac_item)
-        
-        self.device_map[ip] = row_position
-        
-        QTimer.singleShot(10, lambda: self._resolve_hostname(ip, row_position))
-
-    def _resolve_hostname(self, ip, row):
-        try:
-            hostname, _, _ = socket.gethostbyaddr(ip)
-            self.devices_table.setItem(row, 2, QTableWidgetItem(hostname))
-        except socket.herror:
-            self.devices_table.setItem(row, 2, QTableWidgetItem("N/A"))
-
-    @Slot(str)
-    def _on_scan_finished(self, message):
-        self.status_label.setText(message)
-        self.scan_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
-        self.devices_table.resizeColumnsToContents()
-
-    def apply_settings(self, settings: dict):
-        pass
