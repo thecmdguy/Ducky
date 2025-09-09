@@ -81,12 +81,12 @@ After the initial installation, you just need to activate the virtual environmen
 
 ### Installation & Running (for Users)
 
-If you have downloaded the source code, installation is simple.
+If you have downloaded the Ducky.zip from latest release, installation is simple.
 
 1.  **Extract the ZIP file** containing the project.
-2.  **Double-click the `setup.bat` file.**
+2.  **Double-click the `Ducky` Applicaiton.**
 
-This will automatically create a virtual environment, install all dependencies, and place a "Ducky Network Tool" shortcut on your desktop. You can then use this shortcut to start the application.
+(RECOMMENDED) This will automatically run the programm. No Python required.
 
 ### For Developers
 
