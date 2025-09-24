@@ -6,7 +6,6 @@ import serial
 import hashlib
 import time
 import asyncio
-import telnetlib3
 import paramiko
 import math
 from PySide6.QtWidgets import (
@@ -92,6 +91,7 @@ class BaseTerminalWidget(QWidget):
                 tab_name = f"{settings['port']}"
             
             elif self.conn_type == "telnet":
+                import telnetlib3
                 try:
                     reader, writer = asyncio.run(telnetlib3.open_connection(settings['host'], settings['port'], timeout=5))
                     self.telnet_writer = writer
@@ -103,10 +103,14 @@ class BaseTerminalWidget(QWidget):
             elif self.conn_type == "ssh":
                 self.ssh_client = paramiko.SSHClient()
                 self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                
+                disabled_algorithms = {'pubkeys': ['rsa-sha2-256', 'rsa-sha2-512']}
+                
                 self.ssh_client.connect(
                     hostname=settings['host'], port=settings['port'],
                     username=settings['username'], password=settings['password'],
-                    timeout=10, look_for_keys=False, allow_agent=False
+                    timeout=10, look_for_keys=False, allow_agent=False,
+                    disabled_algorithms=disabled_algorithms
                 )
                 self.client = self.ssh_client.invoke_shell()
                 self.reader_thread = ConnectionReaderThread(self.client, None, self.conn_type)
@@ -119,10 +123,13 @@ class BaseTerminalWidget(QWidget):
             self.setFocus()
             return True, tab_name
             
+        except paramiko.ssh_exception.AuthenticationException:
+            QMessageBox.critical(self, "Authentication Error", "Authentication failed. Please check your username and password.")
         except Exception as e:
             QMessageBox.critical(self, "Connection Error", f"Failed to connect: {e}")
-            self.is_connected = False
-            return False, "Error"
+            
+        self.is_connected = False
+        return False, "Error"
 
     def disconnect_from_target(self):
         if self.reader_thread and self.reader_thread.isRunning(): self.reader_thread.stop()
@@ -453,7 +460,7 @@ class DeviceNode(QGraphicsItemGroup):
         font = QFont("Sans Serif", 8)
         label.setFont(font)
         label.setDefaultTextColor(Qt.GlobalColor.white if base_color.lightness() < 128 else Qt.GlobalColor.black)
-        label.setPos(-label.boundingRect().width() / 2, 5)
+        label.setPos(-label.boundingRect().width() / 2, -10)
         self.addToGroup(label)
         
         tooltip = f"IP: {self.ip}\nMAC: {self.mac}"
@@ -481,8 +488,9 @@ class DeviceNode(QGraphicsItemGroup):
             icon_path.moveTo(-6, -4); icon_path.lineTo(-6, -2)
 
         icon = QGraphicsPathItem(icon_path)
-        icon.setPen(QPen(Qt.GlobalColor.white, 2))
-        icon.setPos(0, -10)
+        icon_color = Qt.GlobalColor.white if QColor("#fec301").lightness() < 128 else Qt.GlobalColor.black
+        icon.setPen(QPen(icon_color, 2))
+        icon.setPos(0, -12)
         self.addToGroup(icon)
 
     def mousePressEvent(self, event):
@@ -560,7 +568,7 @@ class TopologyMapperWidget(QWidget):
         if num_nodes == 1:
             self.nodes[0].setPos(0,0)
         else:
-            radius = 35 * num_nodes
+            radius = 35 * (num_nodes / math.pi) + 50
             angle_step = (2 * math.pi) / num_nodes
             for i, node in enumerate(self.nodes):
                 angle = i * angle_step
@@ -598,6 +606,7 @@ class VulnerabilityScannerWidget(QWidget):
     @Slot(dict)
     def display_results(self, data):
         self.search_btn.setEnabled(True); vulnerabilities = data.get('vulnerabilities', [])
+        vulnerabilities.sort(key=lambda x: x['cve']['published'], reverse=True)
         if not vulnerabilities: self.status_label.setText(f"No vulnerabilities found for '{self.keyword_input.text().strip()}'."); return
         self.results_table.setRowCount(len(vulnerabilities))
         for row, item in enumerate(vulnerabilities):
@@ -688,3 +697,89 @@ class HashToolWidget(QWidget):
             if not found: self.cracker_status.setText("Failed. Password not found in the wordlist.")
         except Exception as e: self.cracker_status.setText(f"Error: Could not process wordlist."); QMessageBox.critical(self, "Error", f"An error occurred: {e}")
     def apply_settings(self, settings: dict): pass
+
+class ConnectedDevicesWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.discovery_worker = None
+        self.device_map = {}
+        
+        layout = QVBoxLayout(self)
+        control_bar = QHBoxLayout()
+        self.scan_btn = QPushButton("Scan for Devices")
+        self.status_label = QLabel("Ready to scan the local network.")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        
+        control_bar.addWidget(self.scan_btn)
+        control_bar.addWidget(self.status_label)
+        control_bar.addStretch()
+        layout.addLayout(control_bar)
+        layout.addWidget(self.progress_bar)
+        
+        self.devices_table = QTableWidget()
+        self.devices_table.setColumnCount(3)
+        self.devices_table.setHorizontalHeaderLabels(["IP Address", "MAC Address", "Hostname"])
+        self.devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.devices_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.devices_table.setEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers)
+        self.devices_table.setSortingEnabled(True)
+        layout.addWidget(self.devices_table)
+        
+        self.scan_btn.clicked.connect(self._start_discovery)
+
+    @Slot()
+    def _start_discovery(self):
+        if self.discovery_worker and self.discovery_worker.isRunning():
+            return
+            
+        self.scan_btn.setEnabled(False)
+        self.devices_table.setRowCount(0)
+        self.device_map.clear()
+        self.status_label.setText("Scanning network...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        
+        self.discovery_worker = DiscoveryWorker()
+        self.discovery_worker.host_found.connect(self._add_host_entry)
+        self.discovery_worker.scan_finished.connect(self._on_scan_finished)
+        self.discovery_worker.status_update.connect(self.status_label.setText)
+        self.discovery_worker.start()
+
+    @Slot(dict)
+    def _add_host_entry(self, host_data):
+        ip = host_data.get('ip', 'N/A')
+        mac = host_data.get('mac', 'N/A')
+        
+        if ip in self.device_map:
+            return
+
+        row_position = self.devices_table.rowCount()
+        self.devices_table.insertRow(row_position)
+        
+        ip_item = QTableWidgetItem(ip)
+        mac_item = QTableWidgetItem(mac)
+        
+        self.devices_table.setItem(row_position, 0, ip_item)
+        self.devices_table.setItem(row_position, 1, mac_item)
+        
+        self.device_map[ip] = row_position
+        
+        QTimer.singleShot(10, lambda: self._resolve_hostname(ip, row_position))
+
+    def _resolve_hostname(self, ip, row):
+        try:
+            hostname, _, _ = socket.gethostbyaddr(ip)
+            self.devices_table.setItem(row, 2, QTableWidgetItem(hostname))
+        except socket.herror:
+            self.devices_table.setItem(row, 2, QTableWidgetItem("N/A"))
+
+    @Slot(str)
+    def _on_scan_finished(self, message):
+        self.status_label.setText(message)
+        self.scan_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.devices_table.resizeColumnsToContents()
+
+    def apply_settings(self, settings: dict):
+        pass
