@@ -8,8 +8,10 @@ import json
 import ipaddress
 import paramiko
 import asyncio
-import telnetlib3
 import psutil
+import xml.etree.ElementTree as ET
+import datetime
+import urllib.parse
 from PySide6.QtCore import Signal, QThread
 from scapy.all import get_if_addr, conf, sr, IP, ICMP, getmacbyip
 
@@ -223,9 +225,64 @@ class CveSearchWorker(QThread):
     result_ready = Signal(dict); error_occurred = Signal(str)
     def __init__(self, keyword, parent=None): super().__init__(parent); self.keyword = keyword
     def run(self):
-        base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"; params = {'keywordSearch': self.keyword, 'resultsPerPage': 20}
+        base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        month_ago = now - datetime.timedelta(days=30)
+        
+        params = {
+            'keywordSearch': self.keyword,
+            'pubEndDate': now.isoformat().replace('+00:00', 'Z'),
+            'pubStartDate': month_ago.isoformat().replace('+00:00', 'Z')
+        }
+        
         try:
             response = requests.get(base_url, params=params, timeout=15); response.raise_for_status()
             self.result_ready.emit(response.json())
         except requests.exceptions.RequestException as e: self.error_occurred.emit(f"Network error: Could not connect to the NVD API.\nDetails: {e}")
         except json.JSONDecodeError: self.error_occurred.emit("API Error: Could not parse the response from the NVD API.")
+
+class ImportWorker(QThread):
+    session_found = Signal(dict)
+    finished = Signal(int)
+    error = Signal(str)
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        count = 0
+        try:
+            tree = ET.parse(self.file_path)
+            root = tree.getroot()
+            for session in root.findall('.//Session'):
+                session_data = {}
+                session_name_node = session.find("Name")
+                if session_name_node is None: continue
+                session_data['name'] = session_name_node.text
+
+                options = {node.find('Name').text: node.find('Value').text for node in session.findall('.//Option') if node.find('Name') is not None and node.find('Value') is not None}
+
+                protocol = options.get("Protocol Name")
+                if protocol == "SSH2":
+                    session_data['type'] = 'ssh'
+                    session_data['host'] = options.get("Hostname")
+                    session_data['port'] = int(options.get("Port", "22"))
+                    session_data['username'] = options.get("Username")
+                    session_data['password'] = ""
+                    if session_data['host'] and session_data['username']:
+                        self.session_found.emit(session_data)
+                        count += 1
+                elif protocol == "Telnet":
+                    session_data['type'] = 'telnet'
+                    session_data['host'] = options.get("Hostname")
+                    session_data['port'] = int(options.get("Port", "23"))
+                    if session_data['host']:
+                        self.session_found.emit(session_data)
+                        count += 1
+        except ET.ParseError:
+            self.error.emit("Failed to parse XML file. Ensure it is a valid SecureCRT export.")
+        except Exception as e:
+            self.error.emit(f"An unexpected error occurred during import: {e}")
+        finally:
+            self.finished.emit(count)
