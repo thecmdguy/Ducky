@@ -54,10 +54,10 @@ Follow these instructions to get Ducky running on your local machine.
 
 ### Installation & Running
 
-Thanks to the new packaging setup, installation and running have been simplified into two main steps.
+Follow these instructions to get Ducky running on your local machine.
 
 1.  **Clone the Repository**
-    Open your command prompt or terminal and run:
+    Open your terminal and run:
     ```bash
     git clone https://github.com/thecmdguy/Ducky.git
     cd Ducky
@@ -66,6 +66,7 @@ Thanks to the new packaging setup, installation and running have been simplified
 2.  **Install and Run**
     It is highly recommended to use a virtual environment. This single command will create a virtual environment, install all dependencies from `pyproject.toml`, and make the `ducky` command available.
 
+    **On Windows:**
     ```powershell
     # Create and activate a virtual environment
     python -m venv venv
@@ -77,23 +78,21 @@ Thanks to the new packaging setup, installation and running have been simplified
     # Run the application!
     ducky
     ```
-After the initial installation, you just need to activate the virtual environment (`.\venv\Scripts\activate`) and run `ducky` to start the application.
 
-### Installation & Running (for Users)
+    **On macOS / Linux:**
+    ```bash
+    # Create and activate a virtual environment
+    python3 -m venv venv
+    source venv/bin/activate
 
-If you have downloaded the Ducky.zip from latest release, installation is simple.
+    # Install the project in editable mode.
+    pip install -e .
 
-1.  **Extract the ZIP file** containing the project.
-2.  **Double-click the `Ducky` Applicaiton.**
+    # Run the application
+    ducky
+    ```
 
-(RECOMMENDED) This will automatically run the programm. No Python required.
+> **A Note on the `libpcap` Warning:**
+> When you run Ducky for the first time, you may see a console warning that says `WARNING: No libpcap provider available !`. This is a harmless message from the Scapy library and **can be safely ignored**. Ducky is designed to work perfectly without it.
 
-### For Developers
-
-If you intend to contribute to the project, follow the development setup:
-
-1.  Clone the repository: `git clone https://github.com/thecmdguy/Ducky.git`
-2.  Navigate into the `Ducky` directory.
-3.  Create and activate a virtual environment: `python -m venv venv` and `.\venv\Scripts\activate`
-4.  Install the project in editable mode: `pip install -e .`
-5.  Run the application with the `ducky` command.
+By taking these two steps, you address the user's immediate problem and improve your project's documentation for everyone else.
