@@ -95,4 +95,3 @@ Follow these instructions to get Ducky running on your local machine.
 > **A Note on the `libpcap` Warning:**
 > When you run Ducky for the first time, you may see a console warning that says `WARNING: No libpcap provider available !`. This is a harmless message from the Scapy library and **can be safely ignored**. Ducky is designed to work perfectly without it.
 
-By taking these two steps, you address the user's immediate problem and improve your project's documentation for everyone else.
