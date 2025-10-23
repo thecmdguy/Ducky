@@ -17,15 +17,15 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "PySide6",
-    "pyserial",
-    "psutil",
-    "scapy",
-    "requests",
-    "zxcvbn",
-    "paramiko",
-    "telnetlib3",
-    "pysnmp"
+    "PySide6==6.6.0",
+    "pyserial==3.5",
+    "psutil==5.9.5",
+    "scapy==2.5.0",
+    "requests==2.31.0",
+    "zxcvbn==4.4.28",
+    "paramiko==3.3.1",
+    "telnetlib3==2.0.1",
+    "pysnmp==4.4.12"
 ]
 
 [project.scripts]
@@ -35,5 +35,5 @@ ducky = "ducky_app.main:run"
 Homepage = "https://github.com/thecmdguy/Ducky"
 
 [tool.setuptools]
+packages = ["ducky_app"]
 package-dir = {"" = "src"}
-packages = {find = {where=["src"]}}
