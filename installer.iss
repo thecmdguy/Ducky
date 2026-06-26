@@ -46,7 +46,7 @@ UninstallDisplayName={#MyAppName} {#MyAppVersion}
 
 ; Modern wizard (Inno Setup 6+)
 WizardStyle=modern
-WizardSmallImageFile={#MyIconFile}
+WizardSmallImageFile=src\ducky_app\assets\ducky_icon.png
 
 ; Let user choose between per-user and machine-wide install
 PrivilegesRequired=lowest
