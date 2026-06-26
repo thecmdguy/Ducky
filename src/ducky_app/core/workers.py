@@ -199,9 +199,22 @@ class DiscoveryWorker(QThread):
                 return
 
             self.status_update.emit(f"Pinging {len(target_ips)} hosts on {net.with_prefixlen}...")
-            
-            ans, unans = sr(IP(dst=target_ips)/ICMP(), timeout=2, verbose=0)
-            
+
+            try:
+                ans, unans = sr(IP(dst=target_ips)/ICMP(), timeout=2, verbose=0)
+            except PermissionError:
+                self.scan_finished.emit(
+                    "Error: Permission denied. Raw packet capture requires root/administrator privileges.\n"
+                    "On Linux/macOS, run with sudo. On Windows, run as Administrator."
+                )
+                return
+            except OSError as e:
+                self.scan_finished.emit(
+                    f"Error: Could not open network device: {e}\n"
+                    "Try running the application with root/administrator privileges."
+                )
+                return
+
             self.status_update.emit(f"Scan complete. Found {len(ans)} responsive hosts. Querying for details...")
 
             for sent, received in ans:
@@ -218,8 +231,8 @@ class DiscoveryWorker(QThread):
                 time.sleep(0.01)
                 
             self.scan_finished.emit(f"Discovery finished. Found {len(ans)} devices.")
-        except (IOError, ValueError, socket.herror, RuntimeError) as e:
-            self.scan_finished.emit(f"An error occurred during scan: {e}")
+        except (IOError, ValueError, socket.herror, RuntimeError, PermissionError, OSError) as e:
+            self.scan_finished.emit(f"Error: {e}")
 
 class CveSearchWorker(QThread):
     result_ready = Signal(dict); error_occurred = Signal(str)

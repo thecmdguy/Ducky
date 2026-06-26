@@ -56,15 +56,6 @@ class BaseTerminalWidget(QWidget):
         self.conn_type = None
         self._current_settings = {}
         
-        self.command_history = []
-        self.history_index = -1
-        self.known_commands = sorted([
-            "show running-config", "show startup-config", "show ip interface brief",
-            "show version", "show interfaces", "show vlan", "show mac address-table",
-            "configure terminal", "interface", "ip address", "vlan", "switchport",
-            "no shutdown", "exit", "end", "copy running-config startup-config",
-            "write memory", "reload", "enable"
-        ])
 
         self.output_text = QTextEdit()
         self.output_text.keyPressEvent = self.handle_key_press
@@ -150,120 +141,67 @@ class BaseTerminalWidget(QWidget):
         self.clear_terminal(); self.output_text.setPlainText(log_content); self.output_text.setReadOnly(True)
 
     def handle_key_press(self, event: QKeyEvent):
-        cursor = self.output_text.textCursor()
+        if not self.is_connected or self.output_text.isReadOnly():
+            super(QTextEdit, self.output_text).keyPressEvent(event)
+            return
 
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and (event.key() == Qt.Key.Key_C or event.key() == Qt.Key.Key_V):
-            super(QTextEdit, self.output_text).keyPressEvent(event); return
-        
-        if self.is_connected and not self.output_text.isReadOnly():
-            if event.key() == Qt.Key.Key_Up:
-                if self.history_index < len(self.command_history) - 1:
-                    self.history_index += 1
-                    self.recall_history()
-                return
-            
-            elif event.key() == Qt.Key.Key_Down:
-                if self.history_index > 0:
-                    self.history_index -= 1
-                    self.recall_history()
-                else:
-                    self.history_index = -1
-                    cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-                    line_text = cursor.selectedText()
-                    prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
-                    if prompt_end == 0:
-                         prompt_end = len(line_text)
-                         
-                    cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
-                    cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, prompt_end)
-                    cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
-                    cursor.removeSelectedText()
-                return
-            
-            if event.key() in [Qt.Key.Key_Left, Qt.Key.Key_Right]:
+        ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        key = event.key()
+
+        if ctrl and key == Qt.Key.Key_C:
+            if self.output_text.textCursor().hasSelection():
                 super(QTextEdit, self.output_text).keyPressEvent(event)
-                return
+            else:
+                self._send_bytes(b'\x03')
+            return
 
-        if self.is_connected and not self.output_text.isReadOnly():
-            if event.key() == Qt.Key.Key_Tab:
-                self.perform_tab_completion()
-                return
-                
-            char_to_send = event.text()
-            if event.key() in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
-                cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-                line_text = cursor.selectedText()
-                prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
-                if prompt_end == 0:
-                    prompt_end = len(line_text)
-                    
-                command = line_text[prompt_end:].strip()
-                if command:
-                    if not self.command_history or self.command_history[0] != command:
-                        self.command_history.insert(0, command)
-                self.history_index = -1
-                char_to_send = '\r'
-            
-            elif event.key() == Qt.Key.Key_Backspace:
-                char_to_send = '\b'
-            
-            if char_to_send:
-                try:
-                    data = char_to_send.encode('utf-8')
-                    if self.conn_type == 'ssh': self.client.send(data)
-                    elif self.conn_type == 'telnet': self.telnet_writer.write(data)
-                    else: self.client.write(data)
-                except Exception as e:
-                    QMessageBox.critical(self, "Write Error", f"Failed to send data: {e}"); self.disconnect_from_target()
-        
-        super(QTextEdit, self.output_text).keyPressEvent(event)
-        
-    def recall_history(self):
-        if 0 <= self.history_index < len(self.command_history):
-            command = self.command_history[self.history_index]
-            cursor = self.output_text.textCursor()
-            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-            line_text = cursor.selectedText()
-            prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
-            if prompt_end == 0:
-                prompt_end = len(line_text)
-            
-            prompt = line_text[:prompt_end]
+        if ctrl and key == Qt.Key.Key_V:
+            text = QApplication.clipboard().text()
+            if text:
+                self._send_bytes(text.encode('utf-8'))
+            return
 
-            cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
-            cursor.movePosition(QTextCursor.MoveMode.MoveAnchor, prompt_end)
-            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
-            cursor.removeSelectedText()
-            cursor.insertText(command)
-            self.output_text.setTextCursor(cursor)
-    
-    def perform_tab_completion(self):
-        cursor = self.output_text.textCursor()
-        cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-        line_text = cursor.selectedText()
-        prompt_end = line_text.rfind('>') + 1 or line_text.rfind('#') + 1 or line_text.rfind('$') + 1
-        current_input = line_text[prompt_end:]
+        vt100_map = {
+            Qt.Key.Key_Up:     b'\x1b[A',
+            Qt.Key.Key_Down:   b'\x1b[B',
+            Qt.Key.Key_Right:  b'\x1b[C',
+            Qt.Key.Key_Left:   b'\x1b[D',
+            Qt.Key.Key_Home:   b'\x1b[H',
+            Qt.Key.Key_End:    b'\x1b[F',
+            Qt.Key.Key_Delete: b'\x1b[3~',
+            Qt.Key.Key_Escape: b'\x1b',
+        }
+        if key in vt100_map:
+            self._send_bytes(vt100_map[key])
+            return
 
-        parts = current_input.strip().split()
-        if not parts: return
-        
-        word_to_complete = parts[-1]
-        matches = [cmd for cmd in self.known_commands if cmd.startswith(word_to_complete)]
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._send_bytes(b'\r')
+            return
 
-        if len(matches) == 1:
-            completion = matches[0][len(word_to_complete):]
-            self.output_text.insertPlainText(completion)
-            if self.is_connected:
-                data_to_send = completion.encode('utf-8')
-                if self.conn_type == 'ssh': self.client.send(data_to_send)
-                elif self.conn_type == 'telnet': self.telnet_writer.write(data_to_send)
-                else: self.client.write(data_to_send)
-        elif len(matches) > 1:
-            QApplication.beep()
-            self.output_text.append("\n" + "  ".join(matches))
-            self.output_text.append(line_text)
-            if self.is_connected:
-                self.client.write(b'\n')
+        if key == Qt.Key.Key_Backspace:
+            self._send_bytes(b'\x7f')
+            return
+
+        if key == Qt.Key.Key_Tab:
+            self._send_bytes(b'\t')
+            return
+
+        char = event.text()
+        if char:
+            self._send_bytes(char.encode('utf-8'))
+
+    def _send_bytes(self, data: bytes):
+        try:
+            if self.conn_type == 'ssh':
+                self.client.send(data)
+            elif self.conn_type == 'telnet':
+                self.telnet_writer.write(data)
+            else:
+                self.client.write(data)
+        except Exception as e:
+            QMessageBox.critical(self, "Write Error", f"Failed to send data: {e}")
+            self.disconnect_from_target()
 
     @Slot(bytes)
     def _handle_data_received(self, data: bytes):
@@ -281,10 +219,8 @@ class BaseTerminalWidget(QWidget):
         self.output_text.append(f"\n--- {error_msg} ---"); self.disconnect_from_target()
     def get_current_log_data(self): return self.output_text.toPlainText()
     def get_current_session_metadata(self): return self._current_settings if self.is_connected else {}
-    def clear_terminal(self): 
+    def clear_terminal(self):
         self.output_text.clear()
-        self.command_history.clear()
-        self.history_index = -1
     @Slot(dict)
     def apply_settings(self, settings: dict):
         palette = self.output_text.palette()
@@ -531,6 +467,16 @@ class TopologyMapperWidget(QWidget):
     @Slot()
     def _start_discovery(self):
         if self.discovery_worker and self.discovery_worker.isRunning(): return
+        import os, sys
+        if sys.platform != 'win32' and os.geteuid() != 0:
+            reply = QMessageBox.warning(
+                self, "Root Privileges Required",
+                "Network scanning uses raw packets and requires root/administrator privileges.\n\n"
+                "The scan may fail with a permission error.\n\nContinue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
         self.scan_btn.setEnabled(False)
         self.scene.clear()
         self.nodes.clear()
@@ -560,7 +506,11 @@ class TopologyMapperWidget(QWidget):
         self.status_label.setText(message)
         self.scan_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        
+
+        if message.startswith("Error:"):
+            QMessageBox.warning(self, "Scan Error", message)
+            return
+
         if not self.nodes:
             return
             
@@ -732,14 +682,23 @@ class ConnectedDevicesWidget(QWidget):
     def _start_discovery(self):
         if self.discovery_worker and self.discovery_worker.isRunning():
             return
-            
+        import os, sys
+        if sys.platform != 'win32' and os.geteuid() != 0:
+            reply = QMessageBox.warning(
+                self, "Root Privileges Required",
+                "Network scanning uses raw packets and requires root/administrator privileges.\n\n"
+                "The scan may fail with a permission error.\n\nContinue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
         self.scan_btn.setEnabled(False)
         self.devices_table.setRowCount(0)
         self.device_map.clear()
         self.status_label.setText("Scanning network...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        
+
         self.discovery_worker = DiscoveryWorker()
         self.discovery_worker.host_found.connect(self._add_host_entry)
         self.discovery_worker.scan_finished.connect(self._on_scan_finished)
@@ -779,6 +738,9 @@ class ConnectedDevicesWidget(QWidget):
         self.status_label.setText(message)
         self.scan_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
+        if message.startswith("Error:"):
+            QMessageBox.warning(self, "Scan Error", message)
+            return
         self.devices_table.resizeColumnsToContents()
 
     def apply_settings(self, settings: dict):
