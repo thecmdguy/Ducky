@@ -289,7 +289,9 @@ class DuckyMainWindow(QMainWindow):
 
     def apply_current_settings(self):
         theme = self.config_manager.get_setting("app_theme")
-        QApplication.instance().setStyleSheet(DARK_THEME_QSS if theme == "dark" else LIGHT_THEME_QSS)
+        app = QApplication.instance()
+        app.setFont(QFont("Segoe UI", 10))
+        app.setStyleSheet(DARK_THEME_QSS if theme == "dark" else LIGHT_THEME_QSS)
         settings_dict = self.config_manager._config
 
         for i in range(self.content_stack.count()):
