@@ -32,7 +32,7 @@ If you find Ducky useful and would like to support its development, consider mak
 </a>
 </p>
 
-![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/src/ducky_app/assets/banner.png?raw=true)
+![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/src/ducky_app/assets/demo.png?raw=true)
 *(Ducky v1.5 — dark theme)*
 
 ---
