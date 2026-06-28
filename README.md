@@ -10,7 +10,7 @@
   <p>
     <img src="https://img.shields.io/badge/Python-3.8+-blue.svg?logo=python&logoColor=yellow" alt="Python Version">
     <img src="https://img.shields.io/badge/Qt_for_Python-PySide6-brightgreen.svg?logo=qt" alt="PySide6">
-    <img src="https://img.shields.io/badge/Version-1.5-orange.svg" alt="Version 1.5">
+    <img src="https://img.shields.io/badge/Version-1.5-orange.svg" alt="Version 1.4">
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://github.com/thecmdguy/Ducky/issues"><img src="https://img.shields.io/github/issues/thecmdguy/Ducky" alt="Issues"></a>
     <a href="https://github.com/thecmdguy/Ducky/pulls"><img src="https://img.shields.io/github/issues-pr/thecmdguy/Ducky" alt="Pull Requests"></a>
