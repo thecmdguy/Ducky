@@ -5,11 +5,12 @@
   <p>
     An open-source, all-in-one desktop application for network engineers, students, and enthusiasts.
   </p>
-  
+
   <!-- Badges -->
   <p>
     <img src="https://img.shields.io/badge/Python-3.8+-blue.svg?logo=python&logoColor=yellow" alt="Python Version">
     <img src="https://img.shields.io/badge/Qt_for_Python-PySide6-brightgreen.svg?logo=qt" alt="PySide6">
+    <img src="https://img.shields.io/badge/Version-1.5-orange.svg" alt="Version 1.5">
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://github.com/thecmdguy/Ducky/issues"><img src="https://img.shields.io/github/issues/thecmdguy/Ducky" alt="Issues"></a>
     <a href="https://github.com/thecmdguy/Ducky/pulls"><img src="https://img.shields.io/github/issues-pr/thecmdguy/Ducky" alt="Pull Requests"></a>
@@ -18,10 +19,10 @@
 
 ---
 
-Ducky is a powerful, Desktop application that combines several essential networking utilities into a single, intuitive graphical interface with customizable themes. Stop switching between dozens of windows and get everything you need in one place.
+Ducky is a powerful desktop application that combines essential networking, security, and diagnostic utilities into a single, intuitive graphical interface with customizable themes. Stop switching between dozens of tools and get everything you need in one place.
 
 ### Support Ducky
-If you find Ducky useful and would like to support its development, consider making a donation! Your contributions help keep this project alive and continuously improved.
+If you find Ducky useful and would like to support its development, consider making a donation!
 <p align="center">
 <a href="https://www.paypal.com/paypalme/Gtsnobiladze" target="_blank">
 <img src="https://img.shields.io/badge/Donate-Support%20Ducky-blueviolet?style=for-the-badge&logo=paypal&logoColor=white" alt="Donate Button">
@@ -32,66 +33,145 @@ If you find Ducky useful and would like to support its development, consider mak
 </p>
 
 ![Ducky Screenshot](https://github.com/thecmdguy/Ducky/blob/main/src/ducky_app/assets/banner.png?raw=true)
-*(A screenshot of the Ducky application in action with the dark theme)*
+*(Ducky v1.5 — dark theme)*
+
+---
 
 ## Features
 
-*   **Multi-Protocol Terminal**: Connect via SSH, Telnet, and Serial (COM) in a modern, tabbed interface.
-*   **SNMP Topology Mapper**: Automatically discover your network with a ping and SNMP sweep. See a graphical map of your devices, color-coded by type, and click to view detailed information.
-*   **Network Diagnostics**: A full suite of tools including a Subnet Calculator, Network Monitor (Ping, Traceroute), and a multi-threaded Port Scanner.
-*   **Security Toolkit**: Look up CVEs from the NIST database, check password strength, and calculate file hashes (MD5, SHA1, SHA256, SHA512).
-*   **Rich-Text Notepad**: Keep notes and reminders in a dockable widget with formatting tools and auto-save.
-*   **Customizable UI**: Switch between a sleek dark theme and a clean light theme. Customize terminal colors and fonts to your liking.
+### Terminal
+| Tool | Description |
+|------|-------------|
+| **Multi-Protocol Terminal** | Connect via SSH, Telnet, and Serial (COM) in a modern tabbed interface with session save/load |
+
+### Network Diagnostics
+| Tool | Description |
+|------|-------------|
+| **Network Monitor** | Live CPU, memory, and network I/O stats for your local machine |
+| **Ping** | Send ICMP pings to any host and view round-trip results |
+| **Traceroute** | Trace the full hop path to any destination |
+| **Port Scanner** | Multi-threaded TCP port scanner with custom port range support |
+| **Subnet Calculator** | Compute network address, broadcast, usable host range, and more from any CIDR |
+| **Wake-on-LAN** | Send magic packets to boot remote machines by MAC address |
+
+### DNS & Email
+| Tool | Description |
+|------|-------------|
+| **DNS Lookup** | Query A, AAAA, MX, NS, TXT, CNAME, SOA, PTR, and SRV records |
+| **MX Lookup** | Discover mail exchange servers for any domain |
+| **DNS Propagation** | Check DNS resolution across 8 global resolvers simultaneously |
+| **Whois** | Raw Whois registration data for domains and IP addresses |
+| **SMTP Test** | Test SMTP server connectivity on any port and read the EHLO banner |
+
+### Network & IP
+| Tool | Description |
+|------|-------------|
+| **IP Info** | Geolocation, ISP, ASN, and reverse DNS for any IP address |
+| **MAC Vendor** | Identify the hardware manufacturer from any MAC address OUI |
+| **ARP / Route Table** | View the local ARP cache and system routing table |
+| **Topology Map** | Auto-discover your network with ICMP + SNMP and render a live graphical device map |
+| **Device Scan** | List all active hosts on your LAN with IP, MAC, and hostname |
+
+### Website Analysis
+| Tool | Description |
+|------|-------------|
+| **HTTP Headers** | Fetch and inspect full HTTP response headers for any URL |
+| **SSL Inspector** | View TLS certificate details, validity, issuer, SANs, and cipher info |
+
+### Security
+| Tool | Description |
+|------|-------------|
+| **Blacklist Check** | Check an IP against 10 DNSBL spam blacklist servers simultaneously |
+| **CVE Scan** | Search the NIST NVD for published vulnerabilities by product keyword |
+| **Password Checker** | Analyze password strength with estimated crack time and improvement tips |
+| **Hash Tool** | Calculate MD5, SHA1, SHA256, SHA512 hashes for text or files; includes a dictionary cracker |
+
+### Utilities
+| Tool | Description |
+|------|-------------|
+| **Scratchpad Notes** | Dockable rich-text notepad with formatting tools and auto-save |
+
+---
 
 ## Getting Started
 
-Follow these instructions to get Ducky running on your local machine.
-
 ### Prerequisites
 
-*   Python 3.8 or newer (64-bit recommended for full feature support).
-*   `pip` and `venv`, which are included with modern Python installations.
+- Python 3.8 or newer (64-bit recommended)
+- `pip` and `venv` (included with modern Python)
 
 ### Installation & Running
 
-Follow these instructions to get Ducky running on your local machine.
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/thecmdguy/Ducky.git
+   cd Ducky
+   ```
 
-1.  **Clone the Repository**
-    Open your terminal and run:
-    ```bash
-    git clone https://github.com/thecmdguy/Ducky.git
-    cd Ducky
-    ```
+2. **Create a virtual environment and install dependencies**
 
-2.  **Install and Run**
-    It is highly recommended to use a virtual environment. This single command will create a virtual environment, install all dependencies from `pyproject.toml`, and make the `ducky` command available.
+   **Windows:**
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\activate
+   pip install -e .
+   ```
 
-    **On Windows:**
-    ```powershell
-    # Create and activate a virtual environment
-    python -m venv venv
-    .\venv\Scripts\activate
+   **macOS / Linux:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -e .
+   ```
 
-    # Install the project in editable mode. This also installs all dependencies.
-    pip install -e .
+3. **Run Ducky**
 
-    # Run the application!
-    ducky
-    ```
+   **Windows:**
+   ```powershell
+   .\venv\Scripts\python.exe src\ducky_app\main.py
+   ```
 
-    **On macOS / Linux:**
-    ```bash
-    # Create and activate a virtual environment
-    python3 -m venv venv
-    source venv/bin/activate
+   **macOS / Linux:**
+   ```bash
+   python src/ducky_app/main.py
+   ```
 
-    # Install the project in editable mode.
-    pip install -e .
+> **Note on the `libpcap` warning:** You may see `WARNING: No libpcap provider available!` on first run. This is a harmless Scapy message and can be safely ignored. Ducky works perfectly without it.
 
-    # Run the application
-    ducky
-    ```
+> **Note on Topology Map / Device Scan:** These tools use raw ICMP packets and require administrator / root privileges to scan the network.
 
-> **A Note on the `libpcap` Warning:**
-> When you run Ducky for the first time, you may see a console warning that says `WARNING: No libpcap provider available !`. This is a harmless message from the Scapy library and **can be safely ignored**. Ducky is designed to work perfectly without it.
+---
 
+## Building the Windows Installer
+
+Run the included build script from the `Ducky/` folder in PowerShell:
+
+```powershell
+.\build_installer.ps1
+```
+
+This will automatically:
+1. Verify the virtual environment
+2. Install PyInstaller and Pillow if missing
+3. Convert the PNG icon to a multi-resolution `.ico`
+4. Bundle the app with PyInstaller → `dist\Ducky\`
+5. Install Inno Setup 6 via `winget` if not found
+6. Compile the installer → `installer\Ducky-Setup-1.5.0.exe`
+
+---
+
+## Customization
+
+- **Themes** — Switch between dark and light themes via **Settings → Preferences**
+- **Terminal** — Customize font family, font size, and colors per session
+- **Sessions** — Save and reload terminal sessions from the left panel
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
