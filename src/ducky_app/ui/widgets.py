@@ -8,12 +8,13 @@ import time
 import asyncio
 import paramiko
 import math
+import datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit, QPushButton,
     QLabel, QToolBar, QFontComboBox, QSpinBox, QMessageBox, QFileDialog,
     QColorDialog, QGraphicsView, QGraphicsScene, QGraphicsItemGroup, QGraphicsEllipseItem,
     QGraphicsTextItem, QProgressBar, QComboBox, QPlainTextEdit, QTableWidget, QHeaderView,
-    QAbstractItemView, QTableWidgetItem, QApplication, QGraphicsPathItem
+    QAbstractItemView, QTableWidgetItem, QApplication, QGraphicsPathItem, QTabWidget,
 )
 from PySide6.QtGui import (
     QPalette, QColor, QFont, QIcon, QAction, QTextCharFormat, QTextCursor, QBrush,
@@ -21,7 +22,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtCore import Signal, Slot, QTimer, Qt, QRectF
 from ducky_app.core.config_manager import ConfigManager
-from ducky_app.core.workers import ConnectionReaderThread, NetworkToolThread, DiscoveryWorker, CveSearchWorker
+from ducky_app.core.workers import (
+    ConnectionReaderThread, NetworkToolThread, DiscoveryWorker, CveSearchWorker,
+    DnsLookupWorker, WhoisWorker, HttpHeadersWorker, SslCheckerWorker,
+    BlacklistWorker, IpInfoWorker, SmtpTestWorker,
+    WakeOnLanWorker, MacVendorWorker, DnsPropagationWorker, ArpRouteTableWorker,
+)
 from ducky_app.ui.dialogs import ConnectionDialog
 from zxcvbn import zxcvbn
 
@@ -648,6 +654,538 @@ class HashToolWidget(QWidget):
         except Exception as e: self.cracker_status.setText(f"Error: Could not process wordlist."); QMessageBox.critical(self, "Error", f"An error occurred: {e}")
     def apply_settings(self, settings: dict): pass
 
+class DnsLookupWidget(QWidget):
+    """DNS record lookup — wraps nslookup with record-type selector."""
+
+    RECORD_TYPES = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME', 'SOA', 'PTR', 'SRV']
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Host / IP:"))
+        self.host_input = QLineEdit()
+        self.host_input.setPlaceholderText("e.g.  example.com  or  8.8.8.8")
+        ctrl.addWidget(self.host_input, 1)
+        ctrl.addWidget(QLabel("Record:"))
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(self.RECORD_TYPES)
+        self.type_combo.setFixedWidth(80)
+        ctrl.addWidget(self.type_combo)
+        self.lookup_btn = QPushButton("Look Up")
+        ctrl.addWidget(self.lookup_btn)
+        layout.addLayout(ctrl)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setPlaceholderText("DNS query results will appear here…")
+        layout.addWidget(self.output)
+
+        self.lookup_btn.clicked.connect(self._run_lookup)
+        self.host_input.returnPressed.connect(self._run_lookup)
+
+    @Slot()
+    def _run_lookup(self):
+        host = self.host_input.text().strip()
+        if not host:
+            return
+        if self._worker and self._worker.isRunning():
+            return
+        record_type = self.type_combo.currentText()
+        self.output.setPlainText(f"Querying {record_type} records for {host}…\n")
+        self.lookup_btn.setEnabled(False)
+        self._worker = DnsLookupWorker(host, record_type)
+        self._worker.result_ready.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.lookup_btn.setEnabled(True))
+        self._worker.start()
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class WhoisWidget(QWidget):
+    """Whois lookup via raw socket — supports domains and IP addresses."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Domain / IP:"))
+        self.query_input = QLineEdit()
+        self.query_input.setPlaceholderText("e.g.  example.com  or  1.1.1.1")
+        ctrl.addWidget(self.query_input, 1)
+        self.lookup_btn = QPushButton("Look Up")
+        ctrl.addWidget(self.lookup_btn)
+        layout.addLayout(ctrl)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 9))
+        self.output.setPlaceholderText("Whois registration data will appear here…")
+        layout.addWidget(self.output)
+
+        self.lookup_btn.clicked.connect(self._run_lookup)
+        self.query_input.returnPressed.connect(self._run_lookup)
+
+    @Slot()
+    def _run_lookup(self):
+        query = self.query_input.text().strip()
+        if not query:
+            return
+        if self._worker and self._worker.isRunning():
+            return
+        self.output.setPlainText(f"Querying whois for: {query}\n…")
+        self.lookup_btn.setEnabled(False)
+        self._worker = WhoisWorker(query)
+        self._worker.result_ready.connect(self.output.setPlainText)
+        self._worker.error_occurred.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.lookup_btn.setEnabled(True))
+        self._worker.start()
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class HttpHeadersWidget(QWidget):
+    """Fetch and display HTTP response headers for any URL."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("URL:"))
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("e.g.  https://example.com")
+        ctrl.addWidget(self.url_input, 1)
+        self.fetch_btn = QPushButton("Fetch Headers")
+        ctrl.addWidget(self.fetch_btn)
+        layout.addLayout(ctrl)
+
+        self.summary_label = QLabel("Enter a URL and click Fetch Headers.")
+        self.summary_label.setObjectName("statusLabel")
+        layout.addWidget(self.summary_label)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Header", "Value"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        self.fetch_btn.clicked.connect(self._run_fetch)
+        self.url_input.returnPressed.connect(self._run_fetch)
+
+    @Slot()
+    def _run_fetch(self):
+        url = self.url_input.text().strip()
+        if not url:
+            return
+        if self._worker and self._worker.isRunning():
+            return
+        self.table.setRowCount(0)
+        self.summary_label.setText(f"Fetching headers for {url}…")
+        self.fetch_btn.setEnabled(False)
+        self._worker = HttpHeadersWorker(url)
+        self._worker.result_ready.connect(self._display_results)
+        self._worker.error_occurred.connect(self._on_error)
+        self._worker.finished.connect(lambda: self.fetch_btn.setEnabled(True))
+        self._worker.start()
+
+    @Slot(dict)
+    def _display_results(self, data):
+        redirects = data.get('redirects', [])
+        redir_str = f"   →   {len(redirects)} redirect(s)" if redirects else ""
+        self.summary_label.setText(
+            f"  {data['status']} {data['reason']}   |   {data['elapsed_ms']} ms"
+            f"   |   {data['final_url']}{redir_str}"
+        )
+        headers = data.get('headers', {})
+        self.table.setRowCount(len(headers))
+        for row, (name, value) in enumerate(headers.items()):
+            self.table.setItem(row, 0, QTableWidgetItem(name))
+            self.table.setItem(row, 1, QTableWidgetItem(value))
+        self.table.resizeRowsToContents()
+
+    @Slot(str)
+    def _on_error(self, msg):
+        self.summary_label.setText(f"Error: {msg}")
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class SslCheckerWidget(QWidget):
+    """Inspect TLS/SSL certificate details for any host and port."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Host:"))
+        self.host_input = QLineEdit()
+        self.host_input.setPlaceholderText("e.g.  example.com")
+        ctrl.addWidget(self.host_input, 1)
+        ctrl.addWidget(QLabel("Port:"))
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1, 65535)
+        self.port_spin.setValue(443)
+        self.port_spin.setFixedWidth(72)
+        ctrl.addWidget(self.port_spin)
+        self.inspect_btn = QPushButton("Inspect")
+        ctrl.addWidget(self.inspect_btn)
+        layout.addLayout(ctrl)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setPlaceholderText("SSL certificate details will appear here…")
+        layout.addWidget(self.output)
+
+        self.inspect_btn.clicked.connect(self._run_check)
+        self.host_input.returnPressed.connect(self._run_check)
+
+    @Slot()
+    def _run_check(self):
+        host = self.host_input.text().strip()
+        if not host:
+            return
+        if self._worker and self._worker.isRunning():
+            return
+        port = self.port_spin.value()
+        self.output.setPlainText(f"Connecting to {host}:{port}…")
+        self.inspect_btn.setEnabled(False)
+        self._worker = SslCheckerWorker(host, port)
+        self._worker.result_ready.connect(self._display_results)
+        self._worker.error_occurred.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.inspect_btn.setEnabled(True))
+        self._worker.start()
+
+    @Slot(dict)
+    def _display_results(self, data):
+        cert = data.get('cert', {})
+        lines = [
+            '=' * 54,
+            f"  SSL Certificate  —  {data['host']}:{data['port']}",
+            '=' * 54,
+        ]
+
+        subj = dict(x[0] for x in cert.get('subject', []))
+        lines += ['', '  Subject:',
+                  f"    Common Name  :  {subj.get('commonName', 'N/A')}"]
+        if org := subj.get('organizationName'):
+            lines.append(f"    Organization :  {org}")
+
+        issuer = dict(x[0] for x in cert.get('issuer', []))
+        lines += ['', '  Issuer:',
+                  f"    Common Name  :  {issuer.get('commonName', 'N/A')}"]
+        if iss_org := issuer.get('organizationName'):
+            lines.append(f"    Organization :  {iss_org}")
+
+        not_before = cert.get('notBefore', 'N/A')
+        not_after  = cert.get('notAfter',  'N/A')
+        lines += ['', '  Validity:',
+                  f"    Not Before   :  {not_before}",
+                  f"    Not After    :  {not_after}"]
+        try:
+            expiry = datetime.datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z')
+            days_left = (expiry - datetime.datetime.utcnow()).days
+            tag = 'VALID' if days_left > 0 else 'EXPIRED'
+            lines.append(f"    Days Left    :  {days_left}  ({tag})")
+        except Exception:
+            pass
+
+        sans = cert.get('subjectAltName', [])
+        if sans:
+            lines += ['', '  Subject Alt Names:']
+            for kind, value in sans[:12]:
+                lines.append(f"    {kind}: {value}")
+            if len(sans) > 12:
+                lines.append(f"    … and {len(sans) - 12} more")
+
+        cipher = data.get('cipher') or ('N/A', 'N/A', 'N/A')
+        lines += ['', '  Connection:',
+                  f"    Protocol     :  {data.get('version', 'N/A')}",
+                  f"    Cipher       :  {cipher[0]}",
+                  f"    Key Bits     :  {cipher[2]}",
+                  '', '  Fingerprint (SHA-256):',
+                  f"    {data.get('sha256', 'N/A')}",
+                  '', '=' * 54]
+        self.output.setPlainText('\n'.join(lines))
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class MxLookupWidget(QWidget):
+    """MX record lookup — dedicated mail server discovery."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Domain:"))
+        self.domain_input = QLineEdit()
+        self.domain_input.setPlaceholderText("e.g.  gmail.com  or  example.com")
+        ctrl.addWidget(self.domain_input, 1)
+        self.lookup_btn = QPushButton("Look Up MX")
+        ctrl.addWidget(self.lookup_btn)
+        layout.addLayout(ctrl)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setPlaceholderText("MX (Mail Exchange) records will appear here…")
+        layout.addWidget(self.output)
+
+        self.lookup_btn.clicked.connect(self._run_lookup)
+        self.domain_input.returnPressed.connect(self._run_lookup)
+
+    @Slot()
+    def _run_lookup(self):
+        domain = self.domain_input.text().strip()
+        if not domain or (self._worker and self._worker.isRunning()):
+            return
+        self.output.setPlainText(f"Looking up MX records for {domain}…\n")
+        self.lookup_btn.setEnabled(False)
+        self._worker = DnsLookupWorker(domain, 'MX')
+        self._worker.result_ready.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.lookup_btn.setEnabled(True))
+        self._worker.start()
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class BlacklistCheckWidget(QWidget):
+    """Check an IPv4 address against 10 common DNSBL spam blacklist servers."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("IP Address:"))
+        self.ip_input = QLineEdit()
+        self.ip_input.setPlaceholderText("e.g.  1.2.3.4")
+        ctrl.addWidget(self.ip_input, 1)
+        self.check_btn = QPushButton("Check Blacklists")
+        ctrl.addWidget(self.check_btn)
+        layout.addLayout(ctrl)
+
+        self.status_label = QLabel("Enter an IPv4 address to check against 10 blacklist servers.")
+        self.status_label.setObjectName("statusLabel")
+        layout.addWidget(self.status_label)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Blacklist Server", "Status", "Response"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        self.check_btn.clicked.connect(self._run_check)
+        self.ip_input.returnPressed.connect(self._run_check)
+
+    @Slot()
+    def _run_check(self):
+        ip = self.ip_input.text().strip()
+        if not ip or (self._worker and self._worker.isRunning()):
+            return
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            self.status_label.setText("Please enter a valid IPv4 address.")
+            return
+        self.table.setRowCount(0)
+        self.status_label.setText(f"Checking {ip}…")
+        self.check_btn.setEnabled(False)
+        self._worker = BlacklistWorker(ip)
+        self._worker.result_ready.connect(self._display_results)
+        self._worker.status.connect(self.status_label.setText)
+        self._worker.finished.connect(lambda: self.check_btn.setEnabled(True))
+        self._worker.start()
+
+    @Slot(dict)
+    def _display_results(self, results):
+        listed = sum(1 for is_listed, _ in results.values() if is_listed is True)
+        self.status_label.setText(
+            f"Done — {listed} listing(s) found across {len(results)} servers."
+        )
+        self.table.setRowCount(len(results))
+        for row, (server, (is_listed, response)) in enumerate(results.items()):
+            self.table.setItem(row, 0, QTableWidgetItem(server))
+            if is_listed is True:
+                s = QTableWidgetItem("LISTED")
+                s.setForeground(QBrush(QColor("#ef4444")))
+            elif is_listed is False:
+                s = QTableWidgetItem("Clean")
+                s.setForeground(QBrush(QColor("#10b981")))
+            else:
+                s = QTableWidgetItem("Error")
+                s.setForeground(QBrush(QColor("#f59e0b")))
+            self.table.setItem(row, 1, s)
+            self.table.setItem(row, 2, QTableWidgetItem(str(response)))
+        self.table.resizeRowsToContents()
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class IpInfoWidget(QWidget):
+    """IP address geolocation, ISP, and ASN information via ip-api.com."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("IP Address:"))
+        self.ip_input = QLineEdit()
+        self.ip_input.setPlaceholderText("Leave blank to look up your own public IP")
+        ctrl.addWidget(self.ip_input, 1)
+        self.lookup_btn = QPushButton("Look Up")
+        ctrl.addWidget(self.lookup_btn)
+        layout.addLayout(ctrl)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setPlaceholderText("IP information will appear here…")
+        layout.addWidget(self.output)
+
+        self.lookup_btn.clicked.connect(self._run_lookup)
+        self.ip_input.returnPressed.connect(self._run_lookup)
+
+    @Slot()
+    def _run_lookup(self):
+        if self._worker and self._worker.isRunning():
+            return
+        ip = self.ip_input.text().strip()
+        self.output.setPlainText("Looking up…")
+        self.lookup_btn.setEnabled(False)
+        self._worker = IpInfoWorker(ip)
+        self._worker.result_ready.connect(self._display_results)
+        self._worker.error_occurred.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.lookup_btn.setEnabled(True))
+        self._worker.start()
+
+    @Slot(dict)
+    def _display_results(self, d):
+        lines = [
+            '=' * 50,
+            f"  IP Information  —  {d.get('query', 'N/A')}",
+            '=' * 50,
+            '',
+            f"  IP Address  :  {d.get('query',      'N/A')}",
+            f"  Hostname    :  {d.get('reverse',    'N/A')}",
+            '',
+            f"  Country     :  {d.get('country',    'N/A')}  ({d.get('countryCode','?')})",
+            f"  Region      :  {d.get('regionName', 'N/A')}",
+            f"  City        :  {d.get('city',       'N/A')}",
+            f"  ZIP         :  {d.get('zip',        'N/A')}",
+            f"  Timezone    :  {d.get('timezone',   'N/A')}",
+            f"  Coordinates :  {d.get('lat','?')}, {d.get('lon','?')}",
+            '',
+            f"  ISP         :  {d.get('isp',        'N/A')}",
+            f"  Organization:  {d.get('org',        'N/A')}",
+            f"  AS Number   :  {d.get('as',         'N/A')}",
+            f"  AS Name     :  {d.get('asname',     'N/A')}",
+            '',
+            '=' * 50,
+            '  Data: ip-api.com',
+        ]
+        self.output.setPlainText('\n'.join(lines))
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class SmtpTestWidget(QWidget):
+    """Test SMTP server connectivity on any port and read the EHLO response."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Host:"))
+        self.host_input = QLineEdit()
+        self.host_input.setPlaceholderText("e.g.  mail.example.com  or  smtp.gmail.com")
+        ctrl.addWidget(self.host_input, 1)
+        ctrl.addWidget(QLabel("Port:"))
+        self.port_combo = QComboBox()
+        self.port_combo.addItems(["25", "587", "465", "2525"])
+        self.port_combo.setEditable(True)
+        self.port_combo.setFixedWidth(80)
+        ctrl.addWidget(self.port_combo)
+        self.test_btn = QPushButton("Test SMTP")
+        ctrl.addWidget(self.test_btn)
+        layout.addLayout(ctrl)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setPlaceholderText("SMTP test results will appear here…")
+        layout.addWidget(self.output)
+
+        self.test_btn.clicked.connect(self._run_test)
+        self.host_input.returnPressed.connect(self._run_test)
+
+    @Slot()
+    def _run_test(self):
+        host = self.host_input.text().strip()
+        if not host or (self._worker and self._worker.isRunning()):
+            return
+        try:
+            port = int(self.port_combo.currentText())
+        except ValueError:
+            port = 25
+        self.output.setPlainText(f"Connecting to {host}:{port}…")
+        self.test_btn.setEnabled(False)
+        self._worker = SmtpTestWorker(host, port)
+        self._worker.result_ready.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.test_btn.setEnabled(True))
+        self._worker.start()
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
 class ConnectedDevicesWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -742,6 +1280,275 @@ class ConnectedDevicesWidget(QWidget):
             QMessageBox.warning(self, "Scan Error", message)
             return
         self.devices_table.resizeColumnsToContents()
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class WakeOnLanWidget(QWidget):
+    """Send a Wake-on-LAN magic packet to boot a remote machine."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("MAC Address:"))
+        self.mac_input = QLineEdit()
+        self.mac_input.setPlaceholderText("e.g.  AA:BB:CC:DD:EE:FF  or  AA-BB-CC-DD-EE-FF")
+        row1.addWidget(self.mac_input, 1)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Broadcast IP:"))
+        self.broadcast_input = QLineEdit("255.255.255.255")
+        self.broadcast_input.setFixedWidth(160)
+        row2.addWidget(self.broadcast_input)
+        row2.addSpacing(12)
+        row2.addWidget(QLabel("UDP Port:"))
+        self.port_combo = QComboBox()
+        self.port_combo.addItems(["9", "7", "0"])
+        self.port_combo.setEditable(True)
+        self.port_combo.setFixedWidth(70)
+        row2.addWidget(self.port_combo)
+        row2.addStretch()
+        self.send_btn = QPushButton("Send Magic Packet")
+        row2.addWidget(self.send_btn)
+        layout.addLayout(row2)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setPlaceholderText("Status will appear here after sending the magic packet…")
+        layout.addWidget(self.output)
+
+        self.send_btn.clicked.connect(self._send_packet)
+        self.mac_input.returnPressed.connect(self._send_packet)
+
+    @Slot()
+    def _send_packet(self):
+        mac = self.mac_input.text().strip()
+        if not mac:
+            QMessageBox.warning(self, "Input Error", "Please enter a MAC address.")
+            return
+        if self._worker and self._worker.isRunning():
+            return
+        broadcast = self.broadcast_input.text().strip() or "255.255.255.255"
+        try:
+            port = int(self.port_combo.currentText())
+        except ValueError:
+            port = 9
+        self.output.setPlainText(f"Sending magic packet to {mac}…")
+        self.send_btn.setEnabled(False)
+        self._worker = WakeOnLanWorker(mac, broadcast, port)
+        self._worker.result_ready.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.send_btn.setEnabled(True))
+        self._worker.start()
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class MacVendorWidget(QWidget):
+    """Look up the hardware manufacturer from any MAC address OUI prefix."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("MAC Address:"))
+        self.mac_input = QLineEdit()
+        self.mac_input.setPlaceholderText("e.g.  00:1A:2B:3C:4D:5E  or  001A.2B3C.4D5E")
+        ctrl.addWidget(self.mac_input, 1)
+        self.lookup_btn = QPushButton("Look Up Vendor")
+        ctrl.addWidget(self.lookup_btn)
+        layout.addLayout(ctrl)
+
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Consolas", 10))
+        self.output.setPlaceholderText("Vendor / manufacturer information will appear here…")
+        layout.addWidget(self.output)
+
+        self.lookup_btn.clicked.connect(self._run_lookup)
+        self.mac_input.returnPressed.connect(self._run_lookup)
+
+    @Slot()
+    def _run_lookup(self):
+        mac = self.mac_input.text().strip()
+        if not mac or (self._worker and self._worker.isRunning()):
+            return
+        self.output.setPlainText(f"Looking up vendor for {mac}…")
+        self.lookup_btn.setEnabled(False)
+        self._worker = MacVendorWorker(mac)
+        self._worker.result_ready.connect(self._display_results)
+        self._worker.error_occurred.connect(self.output.setPlainText)
+        self._worker.finished.connect(lambda: self.lookup_btn.setEnabled(True))
+        self._worker.start()
+
+    @Slot(dict)
+    def _display_results(self, d):
+        lines = [
+            '=' * 52,
+            f"  MAC Vendor Lookup  —  {d['mac']}",
+            '=' * 52,
+            '',
+            f"  OUI Prefix  :  {d['oui']}",
+            f"  Vendor      :  {d['vendor']}",
+            '',
+            '=' * 52,
+            '  Data source: macvendors.com',
+        ]
+        self.output.setPlainText('\n'.join(lines))
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class DnsPropagationWidget(QWidget):
+    """Check DNS resolution across 8 global resolvers to verify propagation."""
+
+    RECORD_TYPES = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME']
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Domain:"))
+        self.domain_input = QLineEdit()
+        self.domain_input.setPlaceholderText("e.g.  example.com")
+        ctrl.addWidget(self.domain_input, 1)
+        ctrl.addWidget(QLabel("Record:"))
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(self.RECORD_TYPES)
+        self.type_combo.setFixedWidth(80)
+        ctrl.addWidget(self.type_combo)
+        self.check_btn = QPushButton("Check Propagation")
+        ctrl.addWidget(self.check_btn)
+        layout.addLayout(ctrl)
+
+        self.status_label = QLabel("Enter a domain to check DNS propagation across 8 global resolvers.")
+        self.status_label.setObjectName("statusLabel")
+        layout.addWidget(self.status_label)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Resolver", "Server IP", "Status", "Response"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        self.check_btn.clicked.connect(self._run_check)
+        self.domain_input.returnPressed.connect(self._run_check)
+
+    @Slot()
+    def _run_check(self):
+        domain = self.domain_input.text().strip()
+        if not domain or (self._worker and self._worker.isRunning()):
+            return
+        self.table.setRowCount(0)
+        self.status_label.setText(f"Querying 8 global resolvers for {domain} ({self.type_combo.currentText()})…")
+        self.check_btn.setEnabled(False)
+        self._worker = DnsPropagationWorker(domain, self.type_combo.currentText())
+        self._worker.row_ready.connect(self._add_row)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    @Slot(dict)
+    def _add_row(self, data):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(data['name']))
+        self.table.setItem(row, 1, QTableWidgetItem(data['ip']))
+        status = data['status']
+        if status is True:
+            s = QTableWidgetItem("Resolved")
+            s.setForeground(QBrush(QColor("#10b981")))
+        elif status is False:
+            s = QTableWidgetItem("NXDOMAIN")
+            s.setForeground(QBrush(QColor("#ef4444")))
+        else:
+            s = QTableWidgetItem("No Response")
+            s.setForeground(QBrush(QColor("#f59e0b")))
+        self.table.setItem(row, 2, s)
+        self.table.setItem(row, 3, QTableWidgetItem(data['result']))
+        self.table.resizeRowsToContents()
+
+    @Slot(str)
+    def _on_finished(self, message):
+        self.status_label.setText(message)
+        self.check_btn.setEnabled(True)
+
+    def apply_settings(self, settings: dict):
+        pass
+
+
+class ArpRouteTableWidget(QWidget):
+    """Display the local ARP cache and system routing table."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        ctrl = QHBoxLayout()
+        self.refresh_btn = QPushButton("Refresh Tables")
+        self.status_label = QLabel("Click Refresh to load the ARP cache and routing table.")
+        self.status_label.setObjectName("statusLabel")
+        ctrl.addWidget(self.refresh_btn)
+        ctrl.addWidget(self.status_label)
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
+
+        self.tabs = QTabWidget()
+        self.arp_output = QTextEdit()
+        self.arp_output.setReadOnly(True)
+        self.arp_output.setFont(QFont("Consolas", 9))
+        self.tabs.addTab(self.arp_output, "ARP Cache")
+
+        self.route_output = QTextEdit()
+        self.route_output.setReadOnly(True)
+        self.route_output.setFont(QFont("Consolas", 9))
+        self.tabs.addTab(self.route_output, "Routing Table")
+        layout.addWidget(self.tabs)
+
+        self.refresh_btn.clicked.connect(self._refresh)
+        self._refresh()
+
+    @Slot()
+    def _refresh(self):
+        if self._worker and self._worker.isRunning():
+            return
+        self.refresh_btn.setEnabled(False)
+        self.status_label.setText("Loading…")
+        self._worker = ArpRouteTableWorker()
+        self._worker.result_ready.connect(self._display_results)
+        self._worker.error_occurred.connect(lambda msg: self.status_label.setText(f"Error: {msg}"))
+        self._worker.finished.connect(lambda: self.refresh_btn.setEnabled(True))
+        self._worker.start()
+
+    @Slot(str, str)
+    def _display_results(self, arp_output, route_output):
+        self.arp_output.setPlainText(arp_output)
+        self.route_output.setPlainText(route_output)
+        self.status_label.setText("Tables refreshed successfully.")
 
     def apply_settings(self, settings: dict):
         pass

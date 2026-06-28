@@ -14,7 +14,7 @@ class ConfigManager:
         return {
             "terminal_bg_color": "#282C34",
             "terminal_font_color": "#ABB2BF",
-            "terminal_font_family": "Monospace",
+            "terminal_font_family": "Consolas",
             "terminal_font_size": 10,
             "session_folder": os.path.join(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation), "Ducky_Sessions"),
             "notes_folder": os.path.join(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation), "Ducky_Notes"),

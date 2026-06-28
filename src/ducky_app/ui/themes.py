@@ -170,7 +170,43 @@ QPushButton#donateButton {{
 QPushButton#donateButton:hover   {{ background-color: {DUCKY_YELLOW_HOVER}; }}
 QPushButton#donateButton:pressed {{ background-color: #c8a000; }}
 
-/* ── Toolbar ──────────────────────────────────────────────────────────── */
+/* ── Main tools toolbar ───────────────────────────────────────────────── */
+QToolBar#mainToolbar {{
+    background-color: #16191f;
+    border: none;
+    border-bottom: 1px solid #2e333d;
+    spacing: 2px;
+    padding: 4px 8px;
+}}
+QToolBar#mainToolbar::separator {{
+    background-color: #2e333d;
+    width: 1px;
+    margin: 6px 4px;
+}}
+QToolBar#mainToolbar QToolButton {{
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 5px 8px 4px 8px;
+    color: #8892a0;
+    font-size: 8.5pt;
+    min-width: 64px;
+}}
+QToolBar#mainToolbar QToolButton:hover {{
+    background-color: #22262e;
+    border-color: #2e333d;
+    color: #e2e8f0;
+}}
+QToolBar#mainToolbar QToolButton:checked {{
+    background-color: rgba(254, 195, 1, 0.12);
+    border-color: rgba(254, 195, 1, 0.35);
+    color: {DUCKY_YELLOW};
+}}
+QToolBar#mainToolbar QToolButton:pressed {{
+    background-color: #2e333d;
+}}
+
+/* ── Notepad / other toolbars ─────────────────────────────────────────── */
 QToolBar {{
     background-color: #22262e;
     border: none;
@@ -321,6 +357,53 @@ QProgressBar::chunk {{
 /* ── Misc ─────────────────────────────────────────────────────────────── */
 QSplitter::handle {{ background: #2e333d; width: 1px; height: 1px; }}
 QLabel            {{ color: #e2e8f0; background: transparent; }}
+
+/* ── Scrollable tool sidebar ──────────────────────────────────────────── */
+QScrollArea#toolSidebar {{
+    background-color: #22262e;
+    border: none;
+}}
+QWidget#toolSidebarContainer {{
+    background-color: #22262e;
+}}
+QLabel#sidebarCategory {{
+    color: #5a6475;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    padding: 12px 4px 4px 6px;
+    background: transparent;
+}}
+QPushButton#sidebarTool {{
+    text-align: left;
+    padding: 7px 8px 7px 10px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: #b0bac8;
+    font-size: 10pt;
+    font-weight: 400;
+}}
+QPushButton#sidebarTool:hover {{
+    background-color: #2e333d;
+    color: #e2e8f0;
+}}
+QPushButton#sidebarTool:checked {{
+    background-color: rgba(254, 195, 1, 0.12);
+    color: {DUCKY_YELLOW};
+    font-weight: 600;
+}}
+QPushButton#sidebarTool:pressed {{
+    background-color: #353c47;
+}}
+
+/* ── Status labels inside tool widgets ───────────────────────────────── */
+QLabel#statusLabel {{
+    color: #8892a0;
+    font-size: 9pt;
+    padding: 2px 0;
+    background: transparent;
+}}
 """
 
 
@@ -477,7 +560,43 @@ QPushButton#donateButton {{
 QPushButton#donateButton:hover   {{ background-color: {DUCKY_YELLOW_HOVER}; }}
 QPushButton#donateButton:pressed {{ background-color: #c8a000; }}
 
-/* ── Toolbar ──────────────────────────────────────────────────────────── */
+/* ── Main tools toolbar ───────────────────────────────────────────────── */
+QToolBar#mainToolbar {{
+    background-color: #f0f4f8;
+    border: none;
+    border-bottom: 1px solid #e2e8f0;
+    spacing: 2px;
+    padding: 4px 8px;
+}}
+QToolBar#mainToolbar::separator {{
+    background-color: #e2e8f0;
+    width: 1px;
+    margin: 6px 4px;
+}}
+QToolBar#mainToolbar QToolButton {{
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 5px 8px 4px 8px;
+    color: #718096;
+    font-size: 8.5pt;
+    min-width: 64px;
+}}
+QToolBar#mainToolbar QToolButton:hover {{
+    background-color: #ffffff;
+    border-color: #e2e8f0;
+    color: #1a202c;
+}}
+QToolBar#mainToolbar QToolButton:checked {{
+    background-color: rgba(184, 150, 10, 0.10);
+    border-color: rgba(184, 150, 10, 0.30);
+    color: {DUCKY_YELLOW_DARK};
+}}
+QToolBar#mainToolbar QToolButton:pressed {{
+    background-color: #e2e8f0;
+}}
+
+/* ── Notepad / other toolbars ─────────────────────────────────────────── */
 QToolBar {{
     background-color: #ffffff;
     border: none;
@@ -628,4 +747,51 @@ QProgressBar::chunk {{
 /* ── Misc ─────────────────────────────────────────────────────────────── */
 QSplitter::handle {{ background: #e2e8f0; width: 1px; height: 1px; }}
 QLabel            {{ color: #1a202c; background: transparent; }}
+
+/* ── Scrollable tool sidebar ──────────────────────────────────────────── */
+QScrollArea#toolSidebar {{
+    background-color: #f8fafc;
+    border: none;
+}}
+QWidget#toolSidebarContainer {{
+    background-color: #f8fafc;
+}}
+QLabel#sidebarCategory {{
+    color: #a0aec0;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    padding: 12px 4px 4px 6px;
+    background: transparent;
+}}
+QPushButton#sidebarTool {{
+    text-align: left;
+    padding: 7px 8px 7px 10px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: #4a5568;
+    font-size: 10pt;
+    font-weight: 400;
+}}
+QPushButton#sidebarTool:hover {{
+    background-color: #edf2f7;
+    color: #1a202c;
+}}
+QPushButton#sidebarTool:checked {{
+    background-color: rgba(184, 150, 10, 0.10);
+    color: {DUCKY_YELLOW_DARK};
+    font-weight: 600;
+}}
+QPushButton#sidebarTool:pressed {{
+    background-color: #e2e8f0;
+}}
+
+/* ── Status labels inside tool widgets ───────────────────────────────── */
+QLabel#statusLabel {{
+    color: #718096;
+    font-size: 9pt;
+    padding: 2px 0;
+    background: transparent;
+}}
 """

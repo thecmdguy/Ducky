@@ -9,6 +9,7 @@ import ipaddress
 import paramiko
 import asyncio
 import psutil
+import re
 import xml.etree.ElementTree as ET
 import datetime
 import urllib.parse
@@ -254,6 +255,263 @@ class CveSearchWorker(QThread):
         except requests.exceptions.RequestException as e: self.error_occurred.emit(f"Network error: Could not connect to the NVD API.\nDetails: {e}")
         except json.JSONDecodeError: self.error_occurred.emit("API Error: Could not parse the response from the NVD API.")
 
+class BlacklistWorker(QThread):
+    """Check an IPv4 address against common DNSBL blacklist servers."""
+    result_ready = Signal(dict)
+    status = Signal(str)
+    finished = Signal()
+
+    SERVERS = [
+        'zen.spamhaus.org',
+        'bl.spamcop.net',
+        'cbl.abuseat.org',
+        'dnsbl.sorbs.net',
+        'b.barracudacentral.org',
+        'dnsbl-1.uceprotect.net',
+        'spam.dnsbl.sorbs.net',
+        'psbl.surriel.com',
+        'dnsbl.dronebl.org',
+        'all.s5h.net',
+    ]
+
+    def __init__(self, ip, parent=None):
+        super().__init__(parent)
+        self.ip = ip
+
+    def run(self):
+        try:
+            reversed_ip = '.'.join(reversed(self.ip.split('.')))
+            results = {}
+            for server in self.SERVERS:
+                self.status.emit(f"Checking {server}…")
+                query = f"{reversed_ip}.{server}"
+                try:
+                    addrs = socket.getaddrinfo(query, None, socket.AF_INET)
+                    addr = addrs[0][4][0] if addrs else '127.0.0.0'
+                    results[server] = (True, addr)
+                except socket.gaierror:
+                    results[server] = (False, 'Clean')
+                except Exception as e:
+                    results[server] = (None, str(e))
+            self.result_ready.emit(results)
+        except Exception as e:
+            self.result_ready.emit({'Error': (None, str(e))})
+        self.finished.emit()
+
+
+class IpInfoWorker(QThread):
+    """IP geolocation and ASN lookup via ip-api.com (free, no key needed)."""
+    result_ready = Signal(dict)
+    error_occurred = Signal(str)
+
+    def __init__(self, ip='', parent=None):
+        super().__init__(parent)
+        self.ip = ip
+
+    def run(self):
+        try:
+            fields = 'status,message,continent,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,query,reverse'
+            url = f"http://ip-api.com/json/{self.ip}?fields={fields}"
+            resp = requests.get(url, timeout=10)
+            data = resp.json()
+            if data.get('status') == 'fail':
+                self.error_occurred.emit(data.get('message', 'Lookup failed.'))
+            else:
+                self.result_ready.emit(data)
+        except Exception as e:
+            self.error_occurred.emit(f'IP lookup failed: {e}')
+
+
+class SmtpTestWorker(QThread):
+    """Test SMTP connectivity: connect, read banner, send EHLO."""
+    result_ready = Signal(str)
+
+    def __init__(self, host, port=25, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.port = port
+
+    def run(self):
+        lines = [
+            f"Testing SMTP — {self.host}:{self.port}",
+            '=' * 52,
+        ]
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(8)
+            t0 = time.time()
+            sock.connect((self.host, self.port))
+            ms = int((time.time() - t0) * 1000)
+            banner = sock.recv(1024).decode('utf-8', errors='replace').strip()
+            lines += [f'Connected in {ms} ms', f'Server banner: {banner}', '']
+            sock.sendall(b'EHLO ducky.probe\r\n')
+            ehlo = sock.recv(4096).decode('utf-8', errors='replace').strip()
+            lines += ['EHLO response:', ehlo, '']
+            sock.sendall(b'QUIT\r\n')
+            sock.close()
+            lines.append('Result: SMTP port OPEN — server is responding correctly.')
+        except ConnectionRefusedError:
+            lines.append(f'REFUSED — nothing is listening on port {self.port}.')
+        except socket.timeout:
+            lines.append('TIMED OUT (8 s) — port may be firewalled.')
+        except Exception as e:
+            lines.append(f'Error: {e}')
+        self.result_ready.emit('\n'.join(lines))
+
+
+class DnsLookupWorker(QThread):
+    result_ready = Signal(str)
+    finished = Signal()
+
+    RECORD_TYPES = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'CNAME', 'SOA', 'PTR', 'SRV']
+
+    def __init__(self, host, record_type='A', parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.record_type = record_type
+
+    def run(self):
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith('win') else 0
+            cmd = ['nslookup', f'-type={self.record_type}', self.host]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                                    creationflags=flags)
+            output = (result.stdout + (result.stderr or '')).strip() or 'No results returned.'
+            self.result_ready.emit(output)
+        except FileNotFoundError:
+            try:
+                addrs = socket.getaddrinfo(self.host, None)
+                seen, lines = set(), []
+                for fam, _, _, _, addr in addrs:
+                    ip = addr[0]
+                    if ip not in seen:
+                        seen.add(ip)
+                        lines.append(f"{socket.AddressFamily(fam).name}: {ip}")
+                self.result_ready.emit('\n'.join(lines) or 'No addresses found.')
+            except Exception as e2:
+                self.result_ready.emit(f'Error: {e2}')
+        except Exception as e:
+            self.result_ready.emit(f'Error: {e}')
+        self.finished.emit()
+
+
+class WhoisWorker(QThread):
+    result_ready = Signal(str)
+    error_occurred = Signal(str)
+    finished = Signal()
+
+    def __init__(self, query, parent=None):
+        super().__init__(parent)
+        self.query = query
+
+    @staticmethod
+    def _raw_whois(query, server):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(15)
+            s.connect((server, 43))
+            s.sendall((query + '\r\n').encode())
+            chunks = []
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b''.join(chunks).decode('utf-8', errors='replace')
+
+    def run(self):
+        try:
+            query = self.query.strip()
+            result = self._raw_whois(query, 'whois.iana.org')
+            for line in result.splitlines():
+                lower = line.lower()
+                if lower.startswith('whois:') or lower.startswith('refer:'):
+                    server = line.split(':', 1)[1].strip()
+                    if server:
+                        try:
+                            result = self._raw_whois(query, server)
+                        except Exception:
+                            pass
+                    break
+            self.result_ready.emit(result)
+        except Exception as e:
+            self.error_occurred.emit(f'Whois query failed: {e}')
+        self.finished.emit()
+
+
+class HttpHeadersWorker(QThread):
+    result_ready = Signal(dict)
+    error_occurred = Signal(str)
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self.url = url
+
+    def run(self):
+        try:
+            url = self.url.strip()
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            resp = requests.get(
+                url, timeout=15, allow_redirects=True,
+                headers={'User-Agent': 'Ducky/1.3.0 (https://github.com/thecmdguy/Ducky)'}
+            )
+            self.result_ready.emit({
+                'final_url': resp.url,
+                'status': resp.status_code,
+                'reason': resp.reason,
+                'elapsed_ms': round(resp.elapsed.total_seconds() * 1000),
+                'redirects': [r.url for r in resp.history],
+                'headers': dict(resp.headers),
+            })
+        except requests.exceptions.SSLError as e:
+            self.error_occurred.emit(f'SSL Error: {e}')
+        except requests.exceptions.ConnectionError as e:
+            self.error_occurred.emit(f'Connection Error: {e}')
+        except requests.exceptions.Timeout:
+            self.error_occurred.emit('Request timed out (15 s).')
+        except Exception as e:
+            self.error_occurred.emit(f'Error: {e}')
+
+
+class SslCheckerWorker(QThread):
+    result_ready = Signal(dict)
+    error_occurred = Signal(str)
+
+    def __init__(self, host, port=443, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.port = port
+
+    def run(self):
+        import ssl as _ssl, hashlib
+        try:
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_OPTIONAL
+            with socket.create_connection((self.host, self.port), timeout=10) as raw:
+                with ctx.wrap_socket(raw, server_hostname=self.host) as tls:
+                    cert = tls.getpeercert()
+                    cipher = tls.cipher()
+                    version = tls.version()
+                    der = tls.getpeercert(binary_form=True)
+            fp = hashlib.sha256(der).hexdigest().upper()
+            sha256 = ':'.join(fp[i:i+2] for i in range(0, len(fp), 2))
+            self.result_ready.emit({
+                'cert': cert,
+                'cipher': cipher,
+                'version': version,
+                'host': self.host,
+                'port': self.port,
+                'sha256': sha256,
+            })
+        except _ssl.SSLCertVerificationError as e:
+            self.error_occurred.emit(f'Certificate verification failed: {e}')
+        except socket.timeout:
+            self.error_occurred.emit(f'Connection timed out to {self.host}:{self.port}')
+        except Exception as e:
+            self.error_occurred.emit(f'SSL check failed: {e}')
+
+
 class ImportWorker(QThread):
     session_found = Signal(dict)
     finished = Signal(int)
@@ -299,3 +557,161 @@ class ImportWorker(QThread):
             self.error.emit(f"An unexpected error occurred during import: {e}")
         finally:
             self.finished.emit(count)
+
+
+class WakeOnLanWorker(QThread):
+    result_ready = Signal(str)
+
+    def __init__(self, mac, broadcast='255.255.255.255', port=9, parent=None):
+        super().__init__(parent)
+        self.mac = mac
+        self.broadcast = broadcast
+        self.port = port
+
+    def run(self):
+        try:
+            mac_clean = self.mac.replace(':', '').replace('-', '').replace('.', '')
+            if len(mac_clean) != 12:
+                self.result_ready.emit('Error: Invalid MAC address — expected 12 hex characters.')
+                return
+            mac_bytes = bytes.fromhex(mac_clean)
+            magic = b'\xff' * 6 + mac_bytes * 16
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.settimeout(5)
+                sock.sendto(magic, (self.broadcast, self.port))
+            formatted_mac = ':'.join(mac_clean[i:i+2].upper() for i in range(0, 12, 2))
+            self.result_ready.emit(
+                f'Magic packet sent successfully!\n\n'
+                f'  Target MAC  :  {formatted_mac}\n'
+                f'  Broadcast   :  {self.broadcast}\n'
+                f'  UDP Port    :  {self.port}\n'
+                f'  Packet size :  {len(magic)} bytes\n\n'
+                f'Note: The target device must be powered off but plugged in,\n'
+                f'on the same network segment, and have Wake-on-LAN enabled\n'
+                f'in its BIOS/UEFI firmware settings.'
+            )
+        except ValueError:
+            self.result_ready.emit('Error: Invalid MAC address — could not parse hex bytes.')
+        except Exception as e:
+            self.result_ready.emit(f'Error sending magic packet: {e}')
+
+
+class MacVendorWorker(QThread):
+    result_ready = Signal(dict)
+    error_occurred = Signal(str)
+
+    def __init__(self, mac, parent=None):
+        super().__init__(parent)
+        self.mac = mac
+
+    def run(self):
+        try:
+            mac_clean = self.mac.replace(':', '').replace('-', '').replace('.', '').upper()
+            if len(mac_clean) < 6:
+                self.error_occurred.emit('Invalid MAC address — too short.')
+                return
+            oui = ':'.join(mac_clean[i:i+2] for i in range(0, 6, 2))
+            url = f'https://api.macvendors.com/{urllib.parse.quote(oui)}'
+            resp = requests.get(url, timeout=10, headers={'User-Agent': 'Ducky/1.4 (network toolkit)'})
+            vendor = resp.text.strip() if resp.status_code == 200 else 'Unknown / Not in database'
+            self.result_ready.emit({
+                'mac': ':'.join(mac_clean[i:i+2] for i in range(0, 12, 2)) if len(mac_clean) == 12 else self.mac.upper(),
+                'oui': oui,
+                'vendor': vendor,
+            })
+        except requests.exceptions.Timeout:
+            self.error_occurred.emit('Request timed out (10 s).')
+        except Exception as e:
+            self.error_occurred.emit(f'Vendor lookup failed: {e}')
+
+
+class DnsPropagationWorker(QThread):
+    row_ready = Signal(dict)
+    finished = Signal(str)
+
+    SERVERS = [
+        ('Google',         '8.8.8.8'),
+        ('Google 2',       '8.8.4.4'),
+        ('Cloudflare',     '1.1.1.1'),
+        ('Cloudflare 2',   '1.0.0.1'),
+        ('OpenDNS',        '208.67.222.222'),
+        ('Quad9',          '9.9.9.9'),
+        ('Comodo',         '8.26.56.26'),
+        ('Level3',         '4.2.2.2'),
+    ]
+
+    def __init__(self, domain, record_type='A', parent=None):
+        super().__init__(parent)
+        self.domain = domain
+        self.record_type = record_type
+
+    def _query(self, server_ip):
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith('win') else 0
+            result = subprocess.run(
+                ['nslookup', f'-type={self.record_type}', self.domain, server_ip],
+                capture_output=True, text=True, timeout=8, creationflags=flags
+            )
+            output = result.stdout + result.stderr
+            lower = output.lower()
+
+            if any(x in lower for x in ['nxdomain', "can't find", 'non-existent']):
+                return False, 'NXDOMAIN'
+            if not output.strip() or 'timed out' in lower:
+                return None, 'Timeout'
+
+            # Find the answer section (after server header), then extract IPs
+            answer_part = output
+            for marker in ['non-authoritative answer', 'authoritative answers']:
+                idx = lower.find(marker)
+                if idx != -1:
+                    answer_part = output[idx:]
+                    break
+
+            ips = [m.group() for m in re.finditer(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', answer_part)
+                   if m.group() != server_ip]
+            if ips:
+                return True, ', '.join(list(dict.fromkeys(ips))[:3])
+
+            # Fall back to non-IP answer lines for MX/NS/TXT/CNAME records
+            for line in answer_part.splitlines()[2:]:
+                stripped = line.strip()
+                if stripped and not stripped.lower().startswith(('server', 'address', 'non-auth')):
+                    return True, stripped
+
+            return True, 'Resolved'
+        except subprocess.TimeoutExpired:
+            return None, 'Timeout (8 s)'
+        except Exception as e:
+            return None, f'Error: {e}'
+
+    def run(self):
+        for name, ip in self.SERVERS:
+            status, result = self._query(ip)
+            self.row_ready.emit({'name': name, 'ip': ip, 'status': status, 'result': result})
+        self.finished.emit(f'Propagation check complete for {self.domain} ({self.record_type})')
+
+
+class ArpRouteTableWorker(QThread):
+    result_ready = Signal(str, str)
+    error_occurred = Signal(str)
+
+    def run(self):
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith('win') else 0
+            if sys.platform.startswith('win'):
+                arp_cmd   = ['arp', '-a']
+                route_cmd = ['route', 'print']
+            else:
+                arp_cmd   = ['arp', '-n']
+                route_cmd = ['ip', 'route']
+
+            arp = subprocess.run(arp_cmd,   capture_output=True, text=True, timeout=10, creationflags=flags)
+            rte = subprocess.run(route_cmd, capture_output=True, text=True, timeout=10, creationflags=flags)
+            self.result_ready.emit(
+                arp.stdout or arp.stderr or 'No ARP data available.',
+                rte.stdout or rte.stderr or 'No routing data available.'
+            )
+        except Exception as e:
+            self.error_occurred.emit(f'Error fetching network tables: {e}')
