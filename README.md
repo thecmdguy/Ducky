@@ -26,7 +26,6 @@
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=thecmdguy/Ducky&type=date&legend=top-left" />
  </picture>
 </a>
----
 
 Ducky is a powerful desktop application that combines essential networking, security, and diagnostic utilities into a single, intuitive graphical interface with customizable themes. Stop switching between dozens of tools and get everything you need in one place.
 
